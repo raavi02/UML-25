@@ -1,0 +1,20 @@
+# data & results (don’t version large/generated files)
+data/
+results/
+
+# python
+__pycache__/
+*.pyc
+.venv/
+.env
+
+# notebooks & checkpoints
+.ipynb_checkpoints/
+
+# models / artifacts
+*.pt
+*.pth
+
+# mac / editor
+.DS_Store
+.vscode/
