@@ -42,7 +42,7 @@ def generate_pose_csv(cam_name, output_path, noisy=False, base_coords=None):
     print(f"Saved: {output_path}")
 
 # --- Generate ground-truth for both cams ---
-base_folder = "fly"
+base_folder = "fly_toy"
 os.makedirs(base_folder, exist_ok=True)
 base_cam1 = [np.random.uniform(100, 400, size=(len(bodyparts), 2)) for _ in range(num_frames)]
 base_cam2 = [coords + np.random.normal(0, 10, coords.shape) for coords in base_cam1]  # slightly different view
