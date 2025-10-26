@@ -1,0 +1,14 @@
+# BEFORE ANYTHING ELSE: UPDATE YOUR ABSOLUTE PROJECT PATH
+root_dir: E:/UML-25/
+
+dataset_name: fly
+# dataset_name: fly_toy
+
+dataset_config: ${root_dir}/configs/config_${dataset_name}.yaml
+
+dataset_dir: ${root_dir}/data/${dataset_name}
+
+outputs_dir: ${root_dir}/outputs/${dataset_name}
+
+train:
+  # Can make train params here!
