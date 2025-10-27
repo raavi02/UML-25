@@ -42,14 +42,22 @@ def generate_pose_csv(cam_name, output_path, noisy=False, base_coords=None):
     print(f"Saved: {output_path}")
 
 # --- Generate ground-truth for both cams ---
-base_folder = "fly_toy"
-os.makedirs(base_folder, exist_ok=True)
+base_folder = "../../data/fly_toy"
+folder_name = os.path.basename(base_folder)
+subfolders = ["ground_truth", "predictions"]  
+
+# --- Ensure directory structure exists ---
+for sub in subfolders:
+    os.makedirs(os.path.join(base_folder, f"{folder_name}_{sub}"), exist_ok=True)
+
+gt_dir = os.path.join(base_folder, f"{folder_name}_ground_truth")
+pred_dir = os.path.join(base_folder, f"{folder_name}_predictions")
+
 base_cam1 = [np.random.uniform(100, 400, size=(len(bodyparts), 2)) for _ in range(num_frames)]
 base_cam2 = [coords + np.random.normal(0, 10, coords.shape) for coords in base_cam1]  # slightly different view
 
-generate_pose_csv("CamA_GT", f"{base_folder}/CamA_GT.csv", noisy=False, base_coords=base_cam1)
-generate_pose_csv("CamB_GT", f"{base_folder}/CamB_GT.csv", noisy=False, base_coords=base_cam2)
+generate_pose_csv("CamA_GT", os.path.join(gt_dir, "CamA_GT.csv"), noisy=False, base_coords=base_cam1)
+generate_pose_csv("CamB_GT", os.path.join(gt_dir, "CamB_GT.csv"), noisy=False, base_coords=base_cam2)
 
-# --- Generate predictions (GT + noise) ---
-generate_pose_csv("CamA_pred", f"{base_folder}/CamA_pred.csv", noisy=True, base_coords=base_cam1)
-generate_pose_csv("CamB_pred", f"{base_folder}/CamB_pred.csv", noisy=True, base_coords=base_cam2)
+generate_pose_csv("CamA_pred", os.path.join(pred_dir, "CamA_pred.csv"), noisy=True, base_coords=base_cam1)
+generate_pose_csv("CamB_pred", os.path.join(pred_dir, "CamB_pred.csv"), noisy=True, base_coords=base_cam2)
