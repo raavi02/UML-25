@@ -5,3 +5,5 @@ pandas>=2.0
 pyyaml>=6.0
 opencv-python>=4.9
 matplotlib>=3.8
+omegaconf
+isort

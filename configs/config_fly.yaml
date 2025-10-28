@@ -1,0 +1,82 @@
+# BEFORE ANYTHING ELSE: UPDATE YOUR ABSOLUTE PROJECT PATH
+root_dir: E:/UML-25/
+
+data:
+  dataset_name: fly
+  gt_data_dir: ${root_dir}/data/${dataset_name}/${dataset_name}_ground_truth
+  preds_data_dir: ${root_dir}/data/${dataset_name}/${dataset_name}_predictions
+
+  # video_dir: ${root_dir}/data/fly/videos
+  # camera_params_file: /teamspace/studios/data/fly-anipose/calibrations.csv
+
+  num_views: 6
+  view_names:
+    - Cam-A
+    - Cam-B
+    - Cam-C
+    - Cam-D
+    - Cam-E
+    - Cam-F
+
+  num_keypoints: 30
+  keypoint_names:
+    - L1A
+    - L1B
+    - L1C
+    - L1D
+    - L1E
+    - L2A
+    - L2B
+    - L2C
+    - L2D
+    - L2E
+    - L3A
+    - L3B
+    - L3C
+    - L3D
+    - L3E
+    - R1A
+    - R1B
+    - R1C
+    - R1D
+    - R1E
+    - R2A
+    - R2B
+    - R2C
+    - R2D
+    - R2E
+    - R3A
+    - R3B
+    - R3C
+    - R3D
+    - R3E
+
+  num_bones: 24
+  skeleton:
+    - ['L1A', 'L1B']
+    - ['L1B', 'L1C']
+    - ['L1C', 'L1D']
+    - ['L1D', 'L1E']
+    - ['L2A', 'L2B']
+    - ['L2B', 'L2C']
+    - ['L2C', 'L2D']
+    - ['L2D', 'L2E']
+    - ['L3A', 'L3B']
+    - ['L3B', 'L3C']
+    - ['L3C', 'L3D']
+    - ['L3D', 'L3E']
+    - ['R1A', 'R1B']
+    - ['R1B', 'R1C']
+    - ['R1C', 'R1D']
+    - ['R1D', 'R1E']
+    - ['R2A', 'R2B']
+    - ['R2B', 'R2C']
+    - ['R2C', 'R2D']
+    - ['R2D', 'R2E']
+    - ['R3A', 'R3B']
+    - ['R3B', 'R3C']
+    - ['R3C', 'R3D']
+    - ['R3D', 'R3E']
+
+training:
+  # can make training params here!
