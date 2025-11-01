@@ -100,5 +100,8 @@ def prepare_mlp_data(gt_data: Dict[str, pd.DataFrame],
             y = gt_df.values         
             X_list.append(X)
             y_list.append(y)
-    
-    return np.vstack(X_list), np.vstack(y_list)
+    X = np.vstack(X_list)
+    y = np.vstack(y_list)
+    logger.info(f"Shape of input X: {X.shape}")
+    logger.info(f"Shape of prediction y: {y.shape}")
+    return X, y
