@@ -1,5 +1,5 @@
 """Column name schemas & simple validators."""
-
+import pandas as pd
 KEYPOINT_NAMES = [
     'L1A', 'L1B', 'L1C', 'L1D', 'L1E',
     'L2A', 'L2B', 'L2C', 'L2D', 'L2E', 

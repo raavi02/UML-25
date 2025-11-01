@@ -25,8 +25,7 @@ def load_gt_data(base_path: str = "data/fly", ood: bool = False) -> Dict[str, pd
         
         if path.exists():
             # Skip first 3 rows (multi-index header) and read
-            df = pd.read_csv(path, header=[0, 1, 2], skiprows=3)
-            
+            df = pd.read_csv(path, header=[0, 1, 2])
             # Flatten multi-index columns
             df.columns = ['_'.join(col).strip() for col in df.columns.values]
             
@@ -34,7 +33,6 @@ def load_gt_data(base_path: str = "data/fly", ood: bool = False) -> Dict[str, pd
             coord_cols = [col for col in df.columns if any(kp in col and coord in col 
                          for kp in KEYPOINT_NAMES
                          for coord in ['x', 'y'])]
-            
             df = df[coord_cols]
             gt_data[f"cam_{cam}"] = df
             logger.info(f"Loaded GT data for camera {cam}: {df.shape}")
@@ -57,7 +55,7 @@ def load_pred_data(base_path: str = "data/fly", ood: bool = False) -> Dict[str, 
         
         if path.exists():
             # Skip first 3 rows (multi-index header) and read
-            df = pd.read_csv(path, header=[0, 1, 2], skiprows=3)
+            df = pd.read_csv(path, header=[0, 1, 2])
             
             # Flatten multi-index columns
             df.columns = ['_'.join(col).strip() for col in df.columns.values]
@@ -88,31 +86,19 @@ def prepare_mlp_data(gt_data: Dict[str, pd.DataFrame],
             pred_df = pred_data[cam]
             
             # Ensure same number of samples
-            n_samples = min(len(gt_df), len(pred_df))
-            gt_df = gt_df.iloc[:n_samples]
-            pred_df = pred_df.iloc[:n_samples]
-            
-            # Extract coordinates from predictions (every 3rd column starting from 0 and 1)
+            assert len(gt_df) == len(pred_df), "Length of ground truth and predictions not equal!"
             pred_coords = []
             for i in range(0, pred_df.shape[1], 3):
                 pred_coords.extend([i, i+1])  # x, y columns
-            
             X_coords = pred_df.iloc[:, pred_coords].values
-            
             if use_confidence:
-                # Extract confidence scores (every 3rd column starting from 2)
                 confidence_cols = [i+2 for i in range(0, pred_df.shape[1], 3)]
                 confidences = pred_df.iloc[:, confidence_cols].values
                 X = np.concatenate([X_coords, confidences], axis=1)
             else:
                 X = X_coords
-            
-            # Ground truth coordinates
-            y = gt_df.values
-            
+            y = gt_df.values         
             X_list.append(X)
             y_list.append(y)
     
     return np.vstack(X_list), np.vstack(y_list)
-
-
