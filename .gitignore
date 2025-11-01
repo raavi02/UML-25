@@ -18,3 +18,5 @@ __pycache__/
 # mac / editor
 .DS_Store
 .vscode/
+
+logs/
