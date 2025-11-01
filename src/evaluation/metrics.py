@@ -1,7 +1,7 @@
 import numpy as np
 import torch
 import torch.nn.functional as F
-from typing import Dict, Any
+from typing import Dict, Any, Tuple
 
 
 def calculate_mpjpe(y_pred: np.ndarray, y_true: np.ndarray) -> float:
@@ -45,6 +45,10 @@ def evaluate_model(model: torch.nn.Module,
     # Calculate various metrics
     metrics = {}
     
+    # Store predictions for further analysis
+    metrics['y_pred'] = y_pred
+    metrics['y_true'] = y_test
+    
     # Basic errors
     metrics['mpjpe'] = calculate_mpjpe(y_pred, y_test)
     metrics['pck_5'] = calculate_pck(y_pred, y_test, threshold=5.0)
@@ -56,9 +60,10 @@ def evaluate_model(model: torch.nn.Module,
     metrics['worst_keypoint_error'] = np.max(keypoint_errors)
     metrics['best_keypoint_error'] = np.min(keypoint_errors)
     
-    # Improvement over original predictions
-    original_pred = X_test[:, :60]  # Assuming first 60 dims are original coordinates
-    improvement_metrics = calculate_improvement(original_pred, y_pred, y_test)
-    metrics.update(improvement_metrics)
+    # Mean error per coordinate type (x vs y)
+    x_errors = keypoint_errors[::2]  # Every even index (0, 2, 4, ...)
+    y_errors = keypoint_errors[1::2]  # Every odd index (1, 3, 5, ...)
+    metrics['mean_x_error'] = np.mean(x_errors)
+    metrics['mean_y_error'] = np.mean(y_errors)
     
     return metrics
