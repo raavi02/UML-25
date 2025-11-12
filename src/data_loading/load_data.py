@@ -65,9 +65,9 @@ def load_pred_data(cfg_d : DictConfig, ood: bool = False) -> Dict[str, pd.DataFr
     
     return pred_data
 
-def prepare_mlp_data(gt_data: Dict[str, pd.DataFrame], 
-                    pred_data: Dict[str, pd.DataFrame],
-                    use_confidence: bool = True) -> Tuple[np.ndarray, np.ndarray]:
+def prepare_data(gt_data: Dict[str, pd.DataFrame],
+                 pred_data: Dict[str, pd.DataFrame],
+                 use_confidence: bool = True) -> Tuple[np.ndarray, np.ndarray]:
     """
     Prepare data for MLP training.
     

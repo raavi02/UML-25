@@ -8,9 +8,9 @@ import pandas as pd
 import torch
 
 from src.data_loading.load_data import (load_gt_data, load_pred_data,
-                                        prepare_mlp_data)
+                                        prepare_data)
 from src.evaluation.metrics import calculate_improvement, evaluate_model
-from src.model.mlp_baseline import ResidualMLP
+from src.model.mlp import ResidualMLP
 from src.utils.logging import logger
 
 
@@ -32,7 +32,7 @@ def evaluate_saved_model(model_path: str, data_path: str = "data/fly", use_confi
     gt_test = load_gt_data(data_path, ood=True)
     pred_test = load_pred_data(data_path, ood=True)
     
-    X_test, y_test = prepare_mlp_data(gt_test, pred_test, use_confidence=use_confidence)
+    X_test, y_test = prepare_data(gt_test, pred_test, use_confidence=use_confidence)
     
     if len(X_test) == 0:
         logger.error("No test data available!")

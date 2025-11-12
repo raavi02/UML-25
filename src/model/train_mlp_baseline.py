@@ -11,10 +11,9 @@ from pytorch_lightning.callbacks import EarlyStopping, ModelCheckpoint
 from sklearn.model_selection import train_test_split
 
 from src.data_loading.load_data import (load_gt_data, load_pred_data,
-                                        prepare_mlp_data)
+                                        prepare_data)
 from src.evaluation.metrics import (calculate_improvement, evaluate_model)
-from src.model.mlp import create_summary_report
-from src.model.mlp_baseline import MLPDataModule, ResidualMLP
+from src.model.mlp import create_summary_report, MLPDataModule, ResidualMLP
 from src.utils.logging import logger
 
 
@@ -195,7 +194,7 @@ def main():
     pred_train = load_pred_data(args.data_path, ood=False)
     
     # Prepare MLP data (we'll try both with and without confidence in grid search)
-    X, y = prepare_mlp_data(gt_train, pred_train, use_confidence=True)
+    X, y = prepare_data(gt_train, pred_train, use_confidence=True)
     
     logger.info(f"Data shape - X: {X.shape}, y: {y.shape}")
     
@@ -222,7 +221,7 @@ def main():
             gt_test = load_gt_data(args.data_path, ood=True)
             pred_test = load_pred_data(args.data_path, ood=True)
             
-            X_test, y_test = prepare_mlp_data(
+            X_test, y_test = prepare_data(
                 gt_test, pred_test, 
                 use_confidence=best_result['params']['use_confidence']
             )

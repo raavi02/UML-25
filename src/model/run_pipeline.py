@@ -10,7 +10,7 @@ import pandas as pd
 import pytorch_lightning as pl
 from sklearn.model_selection import train_test_split
 from src.data_loading.load_data import (load_gt_data, load_pred_data,
-                                        prepare_mlp_data)
+                                        prepare_data)
 from src.model.mlp import run_mlp_grid_search, evaluate_mlp_checkpoint, create_summary_report
 from src.utils.io import load_cfgs
 from src.utils.logging import logger
@@ -82,7 +82,7 @@ def pipeline(config_file: str, for_seed: int | None = None) -> None:
 
     # Build index split
     logger.info("Preparing temporary features for index split...")
-    X_all, y_all = prepare_mlp_data(
+    X_all, y_all = prepare_data(
         gt_data=gt_train,
         pred_data=pred_train,
         use_confidence=True
@@ -128,21 +128,9 @@ def pipeline(config_file: str, for_seed: int | None = None) -> None:
                 json.dump(best, f, indent=2)
             logger.info(f"Saved best grid-search result → {cache_file}")
 
-        def debug_split_dict(name, d):
-            logger.info(f"[DEBUG] {name}: {list(d.keys())}")
-            for k, v in d.items():
-                logger.info(f"[DEBUG] {name}[{k}] rows={len(v)} cols={v.shape[1]}")
-
-        logger.info("Sanity-checking test splits…")
-        debug_split_dict("gt_test", splits["gt_test"])
-        debug_split_dict("pred_test", splits["pred_test"])
-
-        common = set(splits["gt_test"].keys()) | set(splits["pred_test"].keys())
-        logger.info(f"[DEBUG] common cams: {sorted(common)}")
-
         # Build test arrays with winning feature layout
         use_conf = best["params"]["use_confidence"]
-        X_test, y_test = prepare_mlp_data(
+        X_test, y_test = prepare_data(
             splits["gt_test"], splits["pred_test"],
             use_confidence=use_conf
         )
