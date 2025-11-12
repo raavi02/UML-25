@@ -7,3 +7,5 @@ opencv-python>=4.9
 matplotlib>=3.8
 omegaconf
 isort
+sklearn
+pytorch_lightning

@@ -1,6 +1,7 @@
+import os
+
 import numpy as np
 import pandas as pd
-import os
 
 # --- Configuration ---
 num_frames = 10

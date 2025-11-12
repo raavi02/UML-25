@@ -26,7 +26,7 @@ These can simply be copy-pasted from the shared Drive
 
 ## Running the GNN Refiner
 ```bash
-python python .\src\model\gnn_refiner.py --config .\configs\pipeline.yaml
+python -m src.model.run_pipeline --config .\configs\pipeline.yaml
 ```
 
 ## GPU Quickstart Guide

@@ -1,17 +1,19 @@
 import argparse
 import itertools
-from pathlib import Path
 import json
-import pandas as pd
-import numpy as np
-from sklearn.model_selection import train_test_split
-import pytorch_lightning as pl
-from pytorch_lightning.callbacks import EarlyStopping, ModelCheckpoint
-import torch
+from pathlib import Path
 
-from src.data_loading.load_data import load_gt_data, load_pred_data, prepare_mlp_data
-from src.model.mlp_baseline import ResidualMLP, MLPDataModule
-from src.evaluation.metrics import calculate_mpjpe, calculate_pck, calculate_improvement, evaluate_model
+import numpy as np
+import pandas as pd
+import pytorch_lightning as pl
+import torch
+from pytorch_lightning.callbacks import EarlyStopping, ModelCheckpoint
+from sklearn.model_selection import train_test_split
+
+from src.data_loading.load_data import (load_gt_data, load_pred_data,
+                                        prepare_data)
+from src.evaluation.metrics import (calculate_improvement, evaluate_model)
+from src.model.mlp import create_summary_report, MLPDataModule, ResidualMLP
 from src.utils.logging import logger
 
 
@@ -192,7 +194,7 @@ def main():
     pred_train = load_pred_data(args.data_path, ood=False)
     
     # Prepare MLP data (we'll try both with and without confidence in grid search)
-    X, y = prepare_mlp_data(gt_train, pred_train, use_confidence=True)
+    X, y = prepare_data(gt_train, pred_train, use_confidence=True)
     
     logger.info(f"Data shape - X: {X.shape}, y: {y.shape}")
     
@@ -219,7 +221,7 @@ def main():
             gt_test = load_gt_data(args.data_path, ood=True)
             pred_test = load_pred_data(args.data_path, ood=True)
             
-            X_test, y_test = prepare_mlp_data(
+            X_test, y_test = prepare_data(
                 gt_test, pred_test, 
                 use_confidence=best_result['params']['use_confidence']
             )
@@ -261,40 +263,5 @@ def main():
         logger.error("No successful training runs!")
 
 
-def create_summary_report(final_results: dict, output_dir: str):
-    """Create a human-readable summary report."""
-    report_path = Path(output_dir) / 'summary_report.txt'
-    
-    with open(report_path, 'w') as f:
-        f.write("MLP Baseline - Summary Report\n")
-        f.write("=" * 50 + "\n\n")
-        
-        f.write("BEST HYPERPARAMETERS:\n")
-        for key, value in final_results['best_hyperparameters'].items():
-            f.write(f"  {key}: {value}\n")
-        
-        f.write(f"\nVALIDATION PERFORMANCE:\n")
-        f.write(f"  Best Validation Loss: {final_results['best_validation_loss']:.6f}\n")
-        
-        if 'test_metrics' in final_results:
-            metrics = final_results['test_metrics']
-            f.write(f"\nTEST SET PERFORMANCE:\n")
-            f.write(f"  MPJPE: {metrics.get('mpjpe', 'N/A'):.4f} pixels\n")
-            f.write(f"  PCK@5: {metrics.get('pck_5', 'N/A'):.2f}%\n")
-            f.write(f"  PCK@10: {metrics.get('pck_10', 'N/A'):.2f}%\n")
-            
-            if 'original_mpjpe' in metrics and 'refined_mpjpe' in metrics:
-                f.write(f"\nIMPROVEMENT OVER ORIGINAL:\n")
-                f.write(f"  Original MPJPE: {metrics['original_mpjpe']:.4f} pixels\n")
-                f.write(f"  Refined MPJPE:  {metrics['refined_mpjpe']:.4f} pixels\n")
-                f.write(f"  Absolute Improvement: {metrics['absolute_improvement']:.4f} pixels\n")
-                f.write(f"  Relative Improvement: {metrics['relative_improvement']:.2f}%\n")
-        
-        f.write(f"\nDATA STATISTICS:\n")
-        for split, shape in final_results['data_shapes'].items():
-            f.write(f"  {split}: {shape}\n")
-    
-    logger.info(f"Summary report saved to: {report_path}")
-    
 if __name__ == "__main__":
     main()
