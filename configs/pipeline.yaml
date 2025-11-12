@@ -11,4 +11,12 @@ dataset_dir: ${root_dir}/data/${dataset_name}
 outputs_dir: ${root_dir}/outputs/${dataset_name}
 
 train:
-  # Can make train params here!
+  model_type: MLP  # or GNN
+  seed: 42
+  max_epochs: 2
+  val_ratio: 0.2
+
+  # NOT IMPLEMENTED YET
+  use_confidence: True
+  run_grid_search: True
+  run_eval_on_ood: True

@@ -1,27 +1,24 @@
 from __future__ import annotations
 
-import os
+from omegaconf import DictConfig
 from pathlib import Path
-from typing import Dict, Any, Tuple, List
-import glob
-
-import pandas as pd
+from typing import Dict, Tuple
 import numpy as np
-
-from src.data_loading.schemas import GT_COLUMNS, PRED_COLUMNS, KEYPOINT_NAMES, validate_gt_columns, validate_pred_columns
+import pandas as pd
 from src.utils.logging import logger
 
-def load_gt_data(base_path: str = "data/fly", ood: bool = False) -> Dict[str, pd.DataFrame]:
+
+def load_gt_data(cfg_d : DictConfig, ood: bool = False) -> Dict[str, pd.DataFrame]:
     """Load ground truth data for all cameras."""
     gt_data = {}
     suffix = "_new" if ood else ""
-    
-    for cam in ['A', 'B', 'C', 'D', 'E', 'F']:
-        file_pattern = f"CollectedData_Cam-{cam}{suffix}.csv"
+    data_dir = cfg_d.data.gt_data_dir
+    for cam in cfg_d.data.view_names:
+        file_pattern = f"CollectedData_{cam}{suffix}.csv"
         if ood:
-            path = Path(base_path) / "fly_ground_truth_OOD" / file_pattern
+            path = Path(f"{data_dir}_OOD") / file_pattern
         else:
-            path = Path(base_path) / "fly_ground_truth" / file_pattern
+            path = Path(data_dir) / file_pattern
         
         if path.exists():
             # Skip first 3 rows (multi-index header) and read
@@ -31,27 +28,27 @@ def load_gt_data(base_path: str = "data/fly", ood: bool = False) -> Dict[str, pd
             
             # Select only coordinate columns (x, y for each keypoint)
             coord_cols = [col for col in df.columns if any(kp in col and coord in col 
-                         for kp in KEYPOINT_NAMES
+                         for kp in cfg_d.data.keypoint_names
                          for coord in ['x', 'y'])]
             df = df[coord_cols]
-            gt_data[f"cam_{cam}"] = df
-            logger.info(f"Loaded GT data for camera {cam}: {df.shape}")
+            gt_data[f"{cam}"] = df
+            logger.info(f"Loaded GT data for {cam}{suffix}: {df.shape}")
     
     return gt_data
 
 
 
-def load_pred_data(base_path: str = "data/fly", ood: bool = False) -> Dict[str, pd.DataFrame]:
+def load_pred_data(cfg_d : DictConfig, ood: bool = False) -> Dict[str, pd.DataFrame]:
     """Load prediction data for all cameras."""
     pred_data = {}
     suffix = "_new" if ood else ""
-    
-    for cam in ['A', 'B', 'C', 'D', 'E', 'F']:
-        file_pattern = f"predictions_Cam-{cam}{suffix}.csv"
+    data_dir = cfg_d.data.preds_data_dir
+    for cam in cfg_d.data.view_names:
+        file_pattern = f"predictions_{cam}{suffix}.csv"
         if ood:
-            path = Path(base_path) / "fly_predictions_OOD" / file_pattern
+            path = Path(f"{data_dir}_OOD") / file_pattern
         else:
-            path = Path(base_path) / "fly_predictions" / file_pattern
+            path = Path(data_dir) / file_pattern
         
         if path.exists():
             # Skip first 3 rows (multi-index header) and read
@@ -61,10 +58,10 @@ def load_pred_data(base_path: str = "data/fly", ood: bool = False) -> Dict[str, 
             df.columns = ['_'.join(col).strip() for col in df.columns.values]
             
             # Select coordinate and likelihood columns
-            coord_cols = [col for col in df.columns if any(kp in col for kp in KEYPOINT_NAMES)]
+            coord_cols = [col for col in df.columns if any(kp in col for kp in cfg_d.data.keypoint_names)]
             df = df[coord_cols]
-            pred_data[f"cam_{cam}"] = df
-            logger.info(f"Loaded prediction data for camera {cam}: {df.shape}")
+            pred_data[f"{cam}"] = df
+            logger.info(f"Loaded prediction data for {cam}{suffix}: {df.shape}")
     
     return pred_data
 
@@ -75,8 +72,8 @@ def prepare_mlp_data(gt_data: Dict[str, pd.DataFrame],
     Prepare data for MLP training.
     
     Returns:
-        X: (n_samples, n_features) - input features (coordinates + optionally confidence)
-        y: (n_samples, 60) - target coordinates
+        X: (n_samples, 2K + (K if use_confidence else 0))
+        y: (n_samples, 2K)
     """
     X_list, y_list = [], []
     

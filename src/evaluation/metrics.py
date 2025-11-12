@@ -1,7 +1,8 @@
+from typing import Any, Dict, Tuple
+
 import numpy as np
 import torch
 import torch.nn.functional as F
-from typing import Dict, Any, Tuple
 
 
 def calculate_mpjpe(y_pred: np.ndarray, y_true: np.ndarray) -> float:

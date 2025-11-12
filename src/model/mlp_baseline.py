@@ -1,9 +1,10 @@
+from typing import List, Optional
+
+import numpy as np
+import pytorch_lightning as pl
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import numpy as np
-from typing import List, Optional
-import pytorch_lightning as pl
 from torch.utils.data import DataLoader, TensorDataset
 
 
@@ -12,13 +13,15 @@ class ResidualMLP(pl.LightningModule):
     
     def __init__(self, 
                  input_dim: int,
+                 n_keypoints: int,
                  hidden_dims: List[int] = [512, 256, 128],
                  dropout: float = 0.1,
                  learning_rate: float = 1e-3,
                  weight_decay: float = 1e-4):
         super().__init__()
         self.save_hyperparameters()
-        
+        self.n_keypoints = int(n_keypoints)
+
         self.layers = nn.ModuleList()
         prev_dim = input_dim
         
@@ -30,13 +33,14 @@ class ResidualMLP(pl.LightningModule):
             prev_dim = hidden_dim
         
         # Output layer - predicts coordinate adjustments
-        self.output_layer = nn.Linear(prev_dim, 60)  # 30 keypoints × 2 coordinates
+        self.output_layer = nn.Linear(prev_dim, self.n_keypoints * 2)
         
         self.learning_rate = learning_rate
         self.weight_decay = weight_decay
         
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        residual = x[:, :60]  # Original coordinates
+        base = self.n_keypoints * 2
+        residual = x[:, :base]  # Original coordinates
         
         for layer in self.layers:
             x = layer(x)

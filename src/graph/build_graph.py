@@ -1,5 +1,7 @@
 """Build a per-frame graph object (placeholder)."""
 from dataclasses import dataclass
+
+
 @dataclass
 class GraphData:
     x: list   # node features

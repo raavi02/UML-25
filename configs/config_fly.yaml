@@ -3,8 +3,8 @@ root_dir: E:/UML-25/
 
 data:
   dataset_name: fly
-  gt_data_dir: ${root_dir}/data/${dataset_name}/${dataset_name}_ground_truth
-  preds_data_dir: ${root_dir}/data/${dataset_name}/${dataset_name}_predictions
+  gt_data_dir: ${root_dir}/data/${data.dataset_name}/${data.dataset_name}_ground_truth
+  preds_data_dir: ${root_dir}/data/${data.dataset_name}/${data.dataset_name}_predictions
 
   # video_dir: ${root_dir}/data/fly/videos
   # camera_params_file: /teamspace/studios/data/fly-anipose/calibrations.csv
@@ -77,6 +77,3 @@ data:
     - ['R3B', 'R3C']
     - ['R3C', 'R3D']
     - ['R3D', 'R3E']
-
-training:
-  # can make training params here!
