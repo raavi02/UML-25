@@ -117,7 +117,7 @@ def evaluate_mlp_checkpoint(best_path: str, X_test: np.ndarray, y_test: np.ndarr
     # Log summary (to file and logger)
     # -------------------------
     logger.info("\n=== TEST SET METRICS ===")
-    logger.info(f"MPJPE: {metrics['mpjpe']:.4f} pixels")
+    logger.info(f"MPJPE: {metrics['mpjpe']:.4f}")
     logger.info(f"PCK@5: {metrics['pck_5']:.2f}%")
     logger.info(f"PCK@10: {metrics['pck_10']:.2f}%")
     if 'relative_improvement' in metrics:
