@@ -14,11 +14,7 @@ def load_gt_data(cfg_d : DictConfig, ood: bool = False) -> Dict[str, pd.DataFram
     suffix = "_new" if ood else ""
     data_dir = cfg_d.data.gt_data_dir
     for cam in cfg_d.data.view_names:
-        file_pattern = f"CollectedData_{cam}{suffix}.csv"
-        if ood:
-            path = Path(f"{data_dir}_OOD") / file_pattern
-        else:
-            path = Path(data_dir) / file_pattern
+        path = Path(data_dir) / f"CollectedData_{cam}{suffix}.csv"
         
         if path.exists():
             # Skip first 3 rows (multi-index header) and read
@@ -37,18 +33,13 @@ def load_gt_data(cfg_d : DictConfig, ood: bool = False) -> Dict[str, pd.DataFram
     return gt_data
 
 
-
 def load_pred_data(cfg_d : DictConfig, ood: bool = False) -> Dict[str, pd.DataFrame]:
     """Load prediction data for all cameras."""
     pred_data = {}
     suffix = "_new" if ood else ""
     data_dir = cfg_d.data.preds_data_dir
     for cam in cfg_d.data.view_names:
-        file_pattern = f"predictions_{cam}{suffix}.csv"
-        if ood:
-            path = Path(f"{data_dir}_OOD") / file_pattern
-        else:
-            path = Path(data_dir) / file_pattern
+        path = Path(data_dir) / f"predictions_{cam}{suffix}.csv"
         
         if path.exists():
             # Skip first 3 rows (multi-index header) and read

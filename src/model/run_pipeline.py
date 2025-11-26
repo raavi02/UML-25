@@ -35,8 +35,8 @@ def pipeline(config_file: str, for_seed: int | None = None) -> None:
     dataset = cfg_pipe.dataset_name
     data_dir = cfg_pipe.dataset_dir
     base_outputs_dir = Path(cfg_pipe.outputs_dir)
-    gt_dir = os.path.join(data_dir, f'{dataset}_ground_truth')
-    preds_dir = os.path.join(data_dir, f'{dataset}_predictions')
+    gt_dir = os.path.join(data_dir, f'ground_truth')
+    preds_dir = os.path.join(data_dir, f'predictions')
 
     # Dataset parameters
     cameras = cfg_d.data.view_names

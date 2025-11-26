@@ -1,0 +1,58 @@
+# BEFORE ANYTHING ELSE: UPDATE YOUR ABSOLUTE PROJECT PATH
+root_dir: E:/UML-25/
+
+data:
+  dataset_name: chickadee
+  gt_data_dir: ${root_dir}/data/${data.dataset_name}/ground_truth
+  preds_data_dir: ${root_dir}/data/${data.dataset_name}/predictions
+
+  # video_dir: ${root_dir}/data/chickadee/videos
+
+  num_views: 6
+  view_names:
+    - lBack
+    - lFront
+    - lTop
+    - rBack
+    - rFront
+    - rTop
+
+  num_keypoints: 18
+  keypoint_names:
+    - topBeak
+    - botBeak
+    - topHead
+    - backHead
+    - centerChes
+    - centerBack
+    - baseTail
+    - tipTail
+    - leftEye
+    - leftNeck
+    - leftWing
+    - leftAnkle
+    - leftFoot
+    - rightEye
+    - rightNeck
+    - rightWing
+    - rightAnkle
+    - rightFoot
+
+  num_bones: 16
+  skeleton:
+    - ['topBeak', 'topHead']
+    - ['leftEye', 'topHead']
+    - ['rightEye', 'topHead']
+    - ['topHead', 'backHead']
+    - ['centerBack', 'backHead']
+    - ['centerBack', 'centerChes']
+    - ['centerBack', 'leftNeck']
+    - ['leftNeck', 'leftWing']
+    - ['centerBack', 'rightNeck']
+    - ['rightNeck', 'rightWing']
+    - ['baseTail', 'centerBack']
+    - ['baseTail', 'tipTail']
+    - ['baseTail', 'leftAnkle']
+    - ['leftAnkle', 'leftFoot']
+    - ['baseTail', 'rightAnkle']
+    - ['rightAnkle', 'rightFoot']
