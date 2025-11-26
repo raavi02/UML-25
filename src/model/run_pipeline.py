@@ -5,13 +5,22 @@ import os
 from pathlib import Path
 from typing import Any, Dict
 import json
+
 import numpy as np
 import pandas as pd
 import pytorch_lightning as pl
 from sklearn.model_selection import train_test_split
-from src.data_loading.load_data import (load_gt_data, load_pred_data,
-                                        prepare_data)
-from src.model.mlp import run_mlp_grid_search, evaluate_mlp_checkpoint, create_summary_report
+
+from src.data_loading.load_data import (
+    load_gt_data,
+    load_pred_data,
+    prepare_data,
+)
+from src.model.mlp import (
+    run_mlp_grid_search,
+    evaluate_mlp_checkpoint,
+    create_summary_report,
+)
 from src.utils.io import load_cfgs
 from src.utils.logging import logger
 
@@ -28,15 +37,15 @@ def pipeline(config_file: str, for_seed: int | None = None) -> None:
     # Setup
     # -------------------------------------------
 
-    # load cfg (pipeline yaml) and cfg_lp (lp yaml)
-    cfg_pipe, cfg_d = load_cfgs(config_file)  # cfg_lp is a DictConfig, cfg_pipe is not
+    # load cfg (pipeline yaml) and cfg_d (data yaml)
+    cfg_pipe, cfg_d = load_cfgs(config_file)
 
     # Define directories
     dataset = cfg_pipe.dataset_name
     data_dir = cfg_pipe.dataset_dir
     base_outputs_dir = Path(cfg_pipe.outputs_dir)
-    gt_dir = os.path.join(data_dir, f'ground_truth')
-    preds_dir = os.path.join(data_dir, f'predictions')
+    gt_dir = os.path.join(data_dir, "ground_truth")
+    preds_dir = os.path.join(data_dir, "predictions")
 
     # Dataset parameters
     cameras = cfg_d.data.view_names
@@ -45,34 +54,36 @@ def pipeline(config_file: str, for_seed: int | None = None) -> None:
     use_conf_flag = bool(getattr(cfg_pipe.train, "use_confidence", True))
     run_grid_search = bool(getattr(cfg_pipe.train, "run_grid_search", True))
     run_eval_on_ood = bool(getattr(cfg_pipe.train, "run_eval_on_ood", True))
+    mode = getattr(cfg_pipe.train, "mode", "refine")  # "refine" or "loo"
 
     # Train parameters
     model_type = cfg_pipe.train.model_type
-    seed = cfg_pipe.train.seed
+    seed = cfg_pipe.train.seed if for_seed is None else for_seed
     max_epochs = cfg_pipe.train.max_epochs
     val_ratio = cfg_pipe.train.val_ratio
-    pl.seed_everything(cfg_pipe.train.seed, workers=True)
+    pl.seed_everything(seed, workers=True)
 
     outputs_dir = base_outputs_dir / f"{model_type}_{seed}"
     outputs_dir.mkdir(parents=True, exist_ok=True)
 
-    print(f'--------------DATASET PARAMETERS------------')
-    print(f'Dataset: {dataset}')
-    print(f'Data Directory: {data_dir}')
-    print(f'Output Directory: {outputs_dir}')
-    print(f'Ground Truth Directory: {gt_dir}')
-    print(f'Predictions Directory: {preds_dir}')
-    print(f'Camera views: {cameras}')
-    print(f'Keypoints: {keypoints}')
-    print(f'Bones: {skeleton}')
-    print(f'--------------------------------------------')
+    print("--------------DATASET PARAMETERS------------")
+    print(f"Dataset: {dataset}")
+    print(f"Data Directory: {data_dir}")
+    print(f"Output Directory: {outputs_dir}")
+    print(f"Ground Truth Directory: {gt_dir}")
+    print(f"Predictions Directory: {preds_dir}")
+    print(f"Camera views: {cameras}")
+    print(f"Keypoints: {keypoints}")
+    print(f"Bones: {skeleton}")
+    print("--------------------------------------------")
 
-    print(f'--------------MODEL PARAMETERS------------')
-    print(f'Network Type: {model_type}')
-    print(f'Seed: {seed}')
-    print(f'Max Epochs: {max_epochs}')
-    print(f'Val Ratio: {val_ratio}')
-    print(f'------------------------------------------')
+    print("--------------MODEL PARAMETERS------------")
+    print(f"Network Type: {model_type}")
+    print(f"Mode: {mode}")
+    print(f"Seed: {seed}")
+    print(f"Max Epochs: {max_epochs}")
+    print(f"Val Ratio: {val_ratio}")
+    print("------------------------------------------")
 
     # -------------------------------------------
     # Load raw data
@@ -86,18 +97,23 @@ def pipeline(config_file: str, for_seed: int | None = None) -> None:
     else:
         gt_test, pred_test = {}, {}
 
-    # Build index split
+    # -------------------------------------------
+    # Build index split (using supervised-style features just to get N)
+    # -------------------------------------------
     logger.info("Preparing temporary features for index split...")
-    X_all, y_all = prepare_data(
+    X_all_tmp, y_all_tmp = prepare_data(
         gt_data=gt_train,
         pred_data=pred_train,
-        use_confidence=use_conf_flag
+        use_confidence=use_conf_flag,
     )
-    feature_dim = X_all.shape[1]
-    idx = np.arange(len(X_all))
-    tr_idx, va_idx = train_test_split(idx, test_size=cfg_pipe.train.val_ratio,
-                                      random_state=seed)
-    logger.info(f"Data shape - X: {X_all.shape}, y: {y_all.shape}")
+    feature_dim = X_all_tmp.shape[1]
+    idx = np.arange(len(X_all_tmp))
+    tr_idx, va_idx = train_test_split(
+        idx,
+        test_size=val_ratio,
+        random_state=seed,
+    )
+    logger.info(f"Data shape (temp) - X: {X_all_tmp.shape}, y: {y_all_tmp.shape}")
     logger.info(f"Train/val split - {len(tr_idx)} train, {len(va_idx)} val")
 
     splits: Dict[str, Any] = {
@@ -115,7 +131,7 @@ def pipeline(config_file: str, for_seed: int | None = None) -> None:
     # -------------------------------------------
     # Train & Evaluate
     # -------------------------------------------
-    if cfg_pipe.train.model_type == "MLP":
+    if model_type == "MLP":
 
         cache_file = outputs_dir / "best_result.json"
 
@@ -125,35 +141,47 @@ def pipeline(config_file: str, for_seed: int | None = None) -> None:
                     f"run_grid_search is False and cached params not found at {cache_file}. "
                     "Run once with run_grid_search=True to generate best_result.json."
                 )
-            logger.info(f"Skipping grid search (run_grid_search=False). Loading cached params → {cache_file.name}.")
+            logger.info(
+                f"Skipping grid search (run_grid_search=False). "
+                f"Loading cached params → {cache_file.name}."
+            )
             with open(cache_file, "r") as f:
                 best = json.load(f)
+
         elif cache_file.exists() and not getattr(cfg_pipe.train, "force_grid", False):
-            logger.info(f"Found cached best params → {cache_file.name}, skipping grid search.")
+            logger.info(
+                f"Found cached best params → {cache_file.name}, skipping grid search."
+            )
             with open(cache_file, "r") as f:
                 best = json.load(f)
+
         else:
             logger.info("Running grid search for best params...")
             best = run_mlp_grid_search(
                 splits=splits,
                 output_dir=outputs_dir,
-                max_epochs=cfg_pipe.train.max_epochs,
+                max_epochs=max_epochs,
                 n_keypoints=cfg_d.data.num_keypoints,
                 use_confidence_options=[use_conf_flag],
+                mode=mode,
             )
             with open(cache_file, "w") as f:
                 json.dump(best, f, indent=2)
             logger.info(f"Saved best grid-search result → {cache_file}")
 
-        # Build test arrays with winning feature layout
+        # ----------------------------------------------------
+        # Evaluation
+        # ----------------------------------------------------
         use_conf = best["params"]["use_confidence"]
-        if run_eval_on_ood:
+
+        if run_eval_on_ood and mode == "refine":
+            # In refine mode, we can evaluate L2 vs GT on OOD test set
             X_test, y_test = prepare_data(
-                splits["gt_test"], splits["pred_test"],
-                use_confidence=use_conf
+                gt_data=splits["gt_test"],
+                pred_data=splits["pred_test"],
+                use_confidence=use_conf,
             )
 
-            # Evaluate on test data (OOD)
             metrics = evaluate_mlp_checkpoint(
                 best_path=best["best_path"],
                 X_test=X_test,
@@ -161,20 +189,21 @@ def pipeline(config_file: str, for_seed: int | None = None) -> None:
                 output_dir=outputs_dir,
             )
         else:
+            # In LOO mode we don't yet have a standard L2-to-GT evaluation;
+            # or if run_eval_on_ood is False, we skip test eval.
             X_test = np.empty((0, feature_dim))
             y_test = np.empty((0, cfg_d.data.num_keypoints * 2))
             metrics = {}
 
-    elif cfg_pipe.train.model_type == "GNN":
-        # from src.models.gnn.experiment import run_gnn_grid_search, evaluate_gnn_checkpoint
-        # best = run_gnn_grid_search(splits=splits, output_dir=outputs_dir / "gnn", max_epochs=cfg_pipe.train.max_epochs)
-        # X_test, y_test = prepare_gnn_data(...)
-        # metrics = evaluate_gnn_checkpoint(best["best_path"], X_test, y_test)
+    elif model_type == "GNN":
+        # Placeholder for future GNN pipeline
         raise NotImplementedError("GNN path to be added.")
     else:
         raise ValueError("model_type must be 'MLP' or 'GNN'")
 
-    # Collect results and export
+    # -------------------------------------------
+    # Collect results and export summary
+    # -------------------------------------------
     final_results = {
         "best_hyperparameters": best["params"],
         "best_validation_loss": float(best["best_score"]),
@@ -184,6 +213,7 @@ def pipeline(config_file: str, for_seed: int | None = None) -> None:
             "val": (len(splits["va_idx"]), feature_dim),
             "test": X_test.shape,
         },
+        "mode": mode,
         "timestamp": pd.Timestamp.now().isoformat(),
     }
     create_summary_report(final_results, outputs_dir)
@@ -193,6 +223,6 @@ def pipeline(config_file: str, for_seed: int | None = None) -> None:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument('--config', required=True, type=str)
+    parser.add_argument("--config", required=True, type=str)
     args = parser.parse_args()
     pipeline(args.config)
