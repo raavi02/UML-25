@@ -3,11 +3,10 @@ root_dir: E:/UML-25/
 
 data:
   dataset_name: fly
-  gt_data_dir: ${root_dir}/data/${data.dataset_name}/${data.dataset_name}_ground_truth
-  preds_data_dir: ${root_dir}/data/${data.dataset_name}/${data.dataset_name}_predictions
+  gt_data_dir: ${root_dir}/data/${data.dataset_name}/ground_truth
+  preds_data_dir: ${root_dir}/data/${data.dataset_name}/predictions
 
   # video_dir: ${root_dir}/data/fly/videos
-  # camera_params_file: /teamspace/studios/data/fly-anipose/calibrations.csv
 
   num_views: 6
   view_names:

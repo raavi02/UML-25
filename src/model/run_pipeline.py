@@ -35,13 +35,16 @@ def pipeline(config_file: str, for_seed: int | None = None) -> None:
     dataset = cfg_pipe.dataset_name
     data_dir = cfg_pipe.dataset_dir
     base_outputs_dir = Path(cfg_pipe.outputs_dir)
-    gt_dir = os.path.join(data_dir, f'{dataset}_ground_truth')
-    preds_dir = os.path.join(data_dir, f'{dataset}_predictions')
+    gt_dir = os.path.join(data_dir, f'ground_truth')
+    preds_dir = os.path.join(data_dir, f'predictions')
 
     # Dataset parameters
     cameras = cfg_d.data.view_names
     keypoints = cfg_d.data.keypoint_names
     skeleton = cfg_d.data.skeleton
+    use_conf_flag = bool(getattr(cfg_pipe.train, "use_confidence", True))
+    run_grid_search = bool(getattr(cfg_pipe.train, "run_grid_search", True))
+    run_eval_on_ood = bool(getattr(cfg_pipe.train, "run_eval_on_ood", True))
 
     # Train parameters
     model_type = cfg_pipe.train.model_type
@@ -77,16 +80,20 @@ def pipeline(config_file: str, for_seed: int | None = None) -> None:
     logger.info("Loading train/test data...")
     gt_train = load_gt_data(cfg_d.copy(), ood=False)
     pred_train = load_pred_data(cfg_d.copy(), ood=False)
-    gt_test = load_gt_data(cfg_d.copy(), ood=True)
-    pred_test = load_pred_data(cfg_d.copy(), ood=True)
+    if run_eval_on_ood:
+        gt_test = load_gt_data(cfg_d.copy(), ood=True)
+        pred_test = load_pred_data(cfg_d.copy(), ood=True)
+    else:
+        gt_test, pred_test = {}, {}
 
     # Build index split
     logger.info("Preparing temporary features for index split...")
     X_all, y_all = prepare_data(
         gt_data=gt_train,
         pred_data=pred_train,
-        use_confidence=True
+        use_confidence=use_conf_flag
     )
+    feature_dim = X_all.shape[1]
     idx = np.arange(len(X_all))
     tr_idx, va_idx = train_test_split(idx, test_size=cfg_pipe.train.val_ratio,
                                       random_state=seed)
@@ -112,7 +119,16 @@ def pipeline(config_file: str, for_seed: int | None = None) -> None:
 
         cache_file = outputs_dir / "best_result_MLP.json"
 
-        if cache_file.exists() and not getattr(cfg_pipe.train, "force_grid", False):
+        if not run_grid_search:
+            if not cache_file.exists():
+                raise FileNotFoundError(
+                    f"run_grid_search is False and cached params not found at {cache_file}. "
+                    "Run once with run_grid_search=True to generate best_result.json."
+                )
+            logger.info(f"Skipping grid search (run_grid_search=False). Loading cached params → {cache_file.name}.")
+            with open(cache_file, "r") as f:
+                best = json.load(f)
+        elif cache_file.exists() and not getattr(cfg_pipe.train, "force_grid", False):
             logger.info(f"Found cached best params → {cache_file.name}, skipping grid search.")
             with open(cache_file, "r") as f:
                 best = json.load(f)
@@ -123,6 +139,7 @@ def pipeline(config_file: str, for_seed: int | None = None) -> None:
                 output_dir=outputs_dir,
                 max_epochs=cfg_pipe.train.max_epochs,
                 n_keypoints=cfg_d.data.num_keypoints,
+                use_confidence_options=[use_conf_flag],
             )
             with open(cache_file, "w") as f:
                 json.dump(best, f, indent=2)
@@ -130,18 +147,23 @@ def pipeline(config_file: str, for_seed: int | None = None) -> None:
 
         # Build test arrays with winning feature layout
         use_conf = best["params"]["use_confidence"]
-        X_test, y_test = prepare_data(
-            splits["gt_test"], splits["pred_test"],
-            use_confidence=use_conf
-        )
+        if run_eval_on_ood:
+            X_test, y_test = prepare_data(
+                splits["gt_test"], splits["pred_test"],
+                use_confidence=use_conf
+            )
 
-        # Evaluate on test data (OOD)
-        metrics = evaluate_mlp_checkpoint(
-            best_path=best["best_path"],
-            X_test=X_test,
-            y_test=y_test,
-            output_dir=outputs_dir,
-        )
+            # Evaluate on test data (OOD)
+            metrics = evaluate_mlp_checkpoint(
+                best_path=best["best_path"],
+                X_test=X_test,
+                y_test=y_test,
+                output_dir=outputs_dir,
+            )
+        else:
+            X_test = np.empty((0, feature_dim))
+            y_test = np.empty((0, cfg_d.data.num_keypoints * 2))
+            metrics = {}
 
     elif cfg_pipe.train.model_type == "GNN":
         from src.model.gnn import run_gnn_grid_search, evaluate_gnn_checkpoint
@@ -181,8 +203,8 @@ def pipeline(config_file: str, for_seed: int | None = None) -> None:
         "best_validation_loss": float(best["best_score"]),
         "test_metrics": metrics,
         "data_shapes": {
-            "train": (len(splits["tr_idx"]), X_test.shape[1]),
-            "val": (len(splits["va_idx"]), X_test.shape[1]),
+            "train": (len(splits["tr_idx"]), feature_dim),
+            "val": (len(splits["va_idx"]), feature_dim),
             "test": X_test.shape,
         },
         "timestamp": pd.Timestamp.now().isoformat(),

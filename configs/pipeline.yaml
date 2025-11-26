@@ -13,10 +13,11 @@ outputs_dir: ${root_dir}/outputs/${dataset_name}
 train:
   model_type: MLP  # or GNN
   seed: 42
-  max_epochs: 2
+  max_epochs: 100
   val_ratio: 0.2
 
-  # NOT IMPLEMENTED YET
   use_confidence: True
   run_grid_search: True
   run_eval_on_ood: True
+  force_grid: True
+
