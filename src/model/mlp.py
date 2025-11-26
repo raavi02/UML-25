@@ -143,15 +143,18 @@ def run_mlp_grid_search(
     output_dir: str | Path,
     max_epochs: int,
     n_keypoints: int,
+    use_confidence_options: List[bool] | None = None,
 ) -> Dict[str, Any]:
     from src.model.grid_search import GridSearchRunner
+
+    use_conf_opts = use_confidence_options if use_confidence_options is not None else [True, False]
 
     param_grid = {
         "hidden_dims": [[512, 256], [256, 128], [512, 256, 128]],
         "dropout": [0.1, 0.2],
         "learning_rate": [1e-3, 5e-4],
         "weight_decay": [1e-4, 1e-5],
-        "use_confidence": [True, False],
+        "use_confidence": use_conf_opts,
         "batch_size": [64, 128],
     }
 
