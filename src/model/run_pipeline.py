@@ -110,7 +110,7 @@ def pipeline(config_file: str, for_seed: int | None = None) -> None:
     # -------------------------------------------
     if cfg_pipe.train.model_type == "MLP":
 
-        cache_file = outputs_dir / "best_result.json"
+        cache_file = outputs_dir / "best_result_MLP.json"
 
         if cache_file.exists() and not getattr(cfg_pipe.train, "force_grid", False):
             logger.info(f"Found cached best params → {cache_file.name}, skipping grid search.")
@@ -144,10 +144,33 @@ def pipeline(config_file: str, for_seed: int | None = None) -> None:
         )
 
     elif cfg_pipe.train.model_type == "GNN":
-        # from src.models.gnn.experiment import run_gnn_grid_search, evaluate_gnn_checkpoint
-        # best = run_gnn_grid_search(splits=splits, output_dir=outputs_dir / "gnn", max_epochs=cfg_pipe.train.max_epochs)
-        # X_test, y_test = prepare_gnn_data(...)
-        # metrics = evaluate_gnn_checkpoint(best["best_path"], X_test, y_test)
+        from src.model.gnn import run_gnn_grid_search, evaluate_gnn_checkpoint
+        cache_file = outputs_dir / "best_result_GNN.json"
+
+        if cache_file.exists() and not getattr(cfg_pipe.train, "force_grid", False):
+            logger.info(f"Found cached best params → {cache_file.name}, skipping grid search.")
+            with open(cache_file, "r") as f:
+                best = json.load(f)
+        else:
+            logger.info("Running grid search for best params...")
+            best = run_gnn_grid_search(splits=splits, output_dir=outputs_dir, 
+                                   max_epochs=cfg_pipe.train.max_epochs,
+                                   n_keypoints=cfg_d.data.num_keypoints,
+                                   skeleton=skeleton,
+                                   keypoints=keypoints,)
+            with open(cache_file, "w") as f:
+                json.dump(best, f, indent=2)
+            logger.info(f"Saved best grid-search result → {cache_file}")
+
+        X_test, y_test = prepare_data(
+            splits["gt_test"], splits["pred_test"],
+            use_confidence=use_conf
+        )
+        metrics = evaluate_gnn_checkpoint(best_path=best["best_path"], 
+                                          X_test=X_test, 
+                                          Y_test=y_test,
+                                          output_dir=outputs_dir,)
+        
         raise NotImplementedError("GNN path to be added.")
     else:
         raise ValueError("model_type must be 'MLP' or 'GNN'")

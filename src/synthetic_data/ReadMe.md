@@ -4,7 +4,7 @@ A simple script to generate synthetic multi-camera pose estimation data in anipo
 
 ### Requirements
 ```bash
-pip install numpy pandas eat bamboo
+pip install numpy pandas 
 ```
 
 ### Usage
