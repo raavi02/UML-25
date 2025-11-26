@@ -93,3 +93,100 @@ def prepare_data(gt_data: Dict[str, pd.DataFrame],
     logger.info(f"Shape of input X: {X.shape}")
     logger.info(f"Shape of prediction y: {y.shape}")
     return X, y
+
+
+def prepare_loo_data_from_preds(
+    pred_data: Dict[str, pd.DataFrame],
+    use_confidence: bool = True,
+    n_drops_per_pose: int = 1,
+    random_state: int | None = None,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Prepare data for the leave-one-out Pose MLP.
+
+    For each frame (and each camera), we:
+      1. Extract the full predicted pose as coords (and optionally confidences).
+      2. Choose `n_drops_per_pose` keypoint indices to "drop".
+      3. Build an input vector:
+           X_example = [pose_features, mask]
+         where:
+           - pose_features = [x_0, y_0, ..., x_{K-1}, y_{K-1}, (conf_0, ..., conf_{K-1})]
+           - mask          = [m_0, ..., m_{K-1}], with m_j = 1 if keypoint j is DROPPED, else 0.
+      4. The target y_example is the original coords (2K):
+           y_example = [x_0, y_0, ..., x_{K-1}, y_{K-1}]
+
+    Returned shapes:
+        X_loo: (n_examples, 2K + (K if use_confidence else 0) + K)
+        y_loo: (n_examples, 2K)
+
+    Notes:
+      - We do NOT use GT here: this is purely self-supervised on predictions.
+      - Multiple cameras are simply concatenated along the batch dimension.
+    """
+    rng = np.random.RandomState(random_state) if random_state is not None else np.random
+
+    X_list = []
+    y_list = []
+
+    for cam, df in pred_data.items():
+        if df is None or df.empty:
+            continue
+
+        num_frames, num_cols = df.shape
+
+        # We expect columns grouped as (x, y, likelihood) per keypoint
+        if num_cols % 3 != 0:
+            raise ValueError(
+                f"Prediction DataFrame for camera {cam} has {num_cols} columns, "
+                "which is not divisible by 3 (x, y, likelihood per keypoint)."
+            )
+
+        K = num_cols // 3  # number of keypoints
+
+        # Indices for x,y coords in the flattened columns
+        coord_cols = []
+        for i in range(0, num_cols, 3):
+            coord_cols.extend([i, i + 1])  # x, y
+
+        coords = df.iloc[:, coord_cols].values.astype(np.float32)  # (num_frames, 2K)
+
+        if use_confidence:
+            conf_cols = [i + 2 for i in range(0, num_cols, 3)]
+            confs = df.iloc[:, conf_cols].values.astype(np.float32)  # (num_frames, K)
+            pose_features = np.concatenate([coords, confs], axis=1)  # (num_frames, 2K + K)
+        else:
+            pose_features = coords  # (num_frames, 2K)
+
+        logger.info(
+            f"LOO prep for camera {cam}: num_frames={num_frames}, "
+            f"K={K}, pose_feature_dim={pose_features.shape[1]}"
+        )
+
+        # For each frame, create n_drops_per_pose training examples
+        for t in range(num_frames):
+            pose_feat_t = pose_features[t]        # (2K [+ K_conf])
+            coords_t = coords[t]                  # (2K) → target
+
+            # choose distinct keypoints to drop
+            drop_indices = rng.choice(K, size=n_drops_per_pose, replace=False)
+
+            for j in drop_indices:
+                mask = np.zeros(K, dtype=np.float32)
+                mask[j] = 1.0                     # mark keypoint j as dropped
+
+                X_example = np.concatenate([pose_feat_t, mask], axis=0)  # (2K [+K_conf] + K)
+                y_example = coords_t.copy()                                # (2K)
+
+                X_list.append(X_example)
+                y_list.append(y_example)
+
+    if not X_list:
+        raise ValueError("No prediction data found to build LOO dataset.")
+
+    X_loo = np.stack(X_list, axis=0)
+    y_loo = np.stack(y_list, axis=0)
+
+    logger.info(f"Shape of LOO input X: {X_loo.shape}")
+    logger.info(f"Shape of LOO target y: {y_loo.shape}")
+
+    return X_loo, y_loo

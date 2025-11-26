@@ -11,7 +11,7 @@ from torch.nn import functional as F
 from torch.utils.data import TensorDataset, DataLoader
 
 from src.utils.logging import logger
-
+from src.model.grid_search import GridSearchRunner
 from src.evaluation.metrics import evaluate_model, calculate_improvement
 from src.data_loading.load_data import prepare_data
 
@@ -21,26 +21,70 @@ def _num_keypoints(cfg: Any) -> int:
     # Works with DictConfig (OmegaConf) or plain dict
     return int(cfg.data.num_keypoints)
 
-def build_mlp_model(params: Dict[str, Any], n_keypoints: int) -> pl.LightningModule:
-    use_conf = params.get("use_confidence", True)
-    input_dim = n_keypoints * 2 + (n_keypoints if use_conf else 0)
-    return ResidualMLP(
-        input_dim=input_dim,
-        n_keypoints=n_keypoints,
-        hidden_dims=params["hidden_dims"],
-        dropout=params["dropout"],
-        learning_rate=params["learning_rate"],
-        weight_decay=params["weight_decay"],
-    )
-
-def build_mlp_datamodule(params: Dict[str, Any], splits: Dict[str, Any]) -> pl.LightningDataModule:
+def build_mlp_model(
+    params: Dict[str, Any],
+    n_keypoints: int,
+    mode: str = "refine",
+    loo_input_dim: int | None = None,
+) -> pl.LightningModule:
+    """
+    mode:
+      - 'refine': ResidualMLP (current baseline, GT-supervised refiner)
+      - 'loo':    PoseMLPLOO (self-supervised leave-one-out pose model)
+    """
     use_conf = params.get("use_confidence", True)
 
-    X_all, y_all = prepare_data(splits["gt_train"], splits["pred_train"], use_confidence=use_conf)
+    if mode == "refine":
+        input_dim = n_keypoints * 2 + (n_keypoints if use_conf else 0)
+        return ResidualMLP(
+            input_dim=input_dim,
+            n_keypoints=n_keypoints,
+            hidden_dims=params["hidden_dims"],
+            dropout=params["dropout"],
+            learning_rate=params["learning_rate"],
+            weight_decay=params["weight_decay"],
+        )
+
+    elif mode == "loo":
+        if loo_input_dim is None:
+            raise ValueError("loo_input_dim must be provided when mode='loo'.")
+        return PoseMLPLOO(
+            input_dim=loo_input_dim,
+            n_keypoints=n_keypoints,
+            hidden_dims=params["hidden_dims"],
+            dropout=params["dropout"],
+            learning_rate=params["learning_rate"],
+            weight_decay=params["weight_decay"],
+        )
+
+    else:
+        raise ValueError(f"Unknown mode: {mode}")
+
+
+def build_mlp_datamodule(
+    params: Dict[str, Any],
+    splits: Dict[str, Any],
+    mode: str = "refine",
+) -> pl.LightningDataModule:
+    use_conf = params.get("use_confidence", True)
+
+    if mode == "refine":
+        X_all, y_all = prepare_data(
+            splits["gt_train"],
+            splits["pred_train"],
+            use_confidence=use_conf,
+        )
+    elif mode == "loo":
+        from src.data_loading.load_data import prepare_loo_data_from_preds
+        X_all, y_all = prepare_loo_data_from_preds(
+            pred_data=splits["pred_train"],
+            use_confidence=use_conf,
+        )
+    else:
+        raise ValueError(f"Unknown mode: {mode}")
+
     tr_idx = splits["tr_idx"]
     va_idx = splits["va_idx"]
-    assert tr_idx.max() < len(X_all) and va_idx.max() < len(X_all), \
-        f"indices out of bounds: X_all len={len(X_all)}, max tr={tr_idx.max()}, max va={va_idx.max()}"
 
     X_train, y_train = X_all[tr_idx], y_all[tr_idx]
     X_val, y_val = X_all[va_idx], y_all[va_idx]
@@ -144,9 +188,15 @@ def run_mlp_grid_search(
     max_epochs: int,
     n_keypoints: int,
     use_confidence_options: List[bool] | None = None,
+    mode: str = "refine",
 ) -> Dict[str, Any]:
-    from src.model.grid_search import GridSearchRunner
+    """
+    Run grid search over MLP hyperparameters.
 
+    mode:
+      - 'refine': ResidualMLP supervised refiner
+      - 'loo':    PoseMLPLOO self-supervised leave-one-out model
+    """
     use_conf_opts = use_confidence_options if use_confidence_options is not None else [True, False]
 
     param_grid = {
@@ -158,11 +208,35 @@ def run_mlp_grid_search(
         "batch_size": [64, 128],
     }
 
+    def _build_model_for_params(params: Dict[str, Any], n_k: int) -> pl.LightningModule:
+        use_conf = params.get("use_confidence", True)
+
+        if mode == "refine":
+            loo_input_dim = None
+        else:
+            # coords (2K) + optional conf (K) + mask (K)
+            base_dim = 2 * n_k + (n_k if use_conf else 0)
+            loo_input_dim = base_dim + n_k
+
+        return build_mlp_model(
+            params=params,
+            n_keypoints=n_k,
+            mode=mode,
+            loo_input_dim=loo_input_dim,
+        )
+
+    def _build_datamodule_for_params(params: Dict[str, Any], splits_: Dict[str, Any]) -> pl.LightningDataModule:
+        return build_mlp_datamodule(
+            params=params,
+            splits=splits_,
+            mode=mode,
+        )
+
     runner = GridSearchRunner(
         output_dir=output_dir,
         param_grid=param_grid,
-        build_model=build_mlp_model,
-        build_datamodule=build_mlp_datamodule,
+        build_model=_build_model_for_params,
+        build_datamodule=_build_datamodule_for_params,
         monitor_metric="val_loss",
         mode="min",
         patience=15,
@@ -173,44 +247,83 @@ def run_mlp_grid_search(
     results = runner.run(splits)
     if not results:
         raise RuntimeError("No successful MLP runs.")
+
     best = min(results, key=lambda r: r["best_score"])
-    return best  # {params, best_score, best_path}
+    logger.info(f"Best MLP ({mode}) grid-search result: {best}")
+    return best
 
 
 def create_summary_report(final_results: dict, output_dir: str):
     """Create a human-readable summary report."""
     report_path = Path(output_dir) / 'summary_report.txt'
 
+    def _fmt_float(val, fmt: str = ".4f") -> str:
+        """Safely format a value as float; fall back to 'N/A'."""
+        if isinstance(val, (int, float, np.floating)):
+            return format(val, fmt)
+        return "N/A"
+
     with open(report_path, 'w') as f:
         f.write("MLP Baseline - Summary Report\n")
         f.write("=" * 50 + "\n\n")
 
+        # -----------------------
+        # Best hyperparameters
+        # -----------------------
         f.write("BEST HYPERPARAMETERS:\n")
-        for key, value in final_results['best_hyperparameters'].items():
+        for key, value in final_results.get('best_hyperparameters', {}).items():
             f.write(f"  {key}: {value}\n")
 
-        f.write(f"\nVALIDATION PERFORMANCE:\n")
-        f.write(f"  Best Validation Loss: {final_results['best_validation_loss']:.6f}\n")
+        # -----------------------
+        # Validation performance
+        # -----------------------
+        f.write("\nVALIDATION PERFORMANCE:\n")
+        val_loss = final_results.get('best_validation_loss', None)
+        f.write(
+            f"  Best Validation Loss: "
+            f"{_fmt_float(val_loss, '.6f') if val_loss is not None else 'N/A'}\n"
+        )
 
-        if 'test_metrics' in final_results:
-            metrics = final_results['test_metrics']
-            f.write(f"\nTEST SET PERFORMANCE:\n")
-            f.write(f"  MPJPE: {metrics.get('mpjpe', 'N/A'):.4f} pixels\n")
-            f.write(f"  PCK@5: {metrics.get('pck_5', 'N/A'):.2f}%\n")
-            f.write(f"  PCK@10: {metrics.get('pck_10', 'N/A'):.2f}%\n")
+        # -----------------------
+        # Test performance
+        # -----------------------
+        metrics = final_results.get('test_metrics', None)
+        if metrics and isinstance(metrics, dict) and len(metrics) > 0:
+            f.write("\nTEST SET PERFORMANCE:\n")
+            mpjpe = metrics.get('mpjpe', None)
+            pck_5 = metrics.get('pck_5', None)
+            pck_10 = metrics.get('pck_10', None)
 
-            if 'original_mpjpe' in metrics and 'refined_mpjpe' in metrics:
-                f.write(f"\nIMPROVEMENT OVER ORIGINAL:\n")
-                f.write(f"  Original MPJPE: {metrics['original_mpjpe']:.4f} pixels\n")
-                f.write(f"  Refined MPJPE:  {metrics['refined_mpjpe']:.4f} pixels\n")
-                f.write(f"  Absolute Improvement: {metrics['absolute_improvement']:.4f} pixels\n")
-                f.write(f"  Relative Improvement: {metrics['relative_improvement']:.2f}%\n")
+            f.write(f"  MPJPE: {_fmt_float(mpjpe, '.4f')} pixels\n")
+            f.write(f"  PCK@5: {_fmt_float(pck_5, '.2f')}%\n")
+            f.write(f"  PCK@10: {_fmt_float(pck_10, '.2f')}%\n")
 
-        f.write(f"\nDATA STATISTICS:\n")
-        for split, shape in final_results['data_shapes'].items():
+            # Improvement block (only if these exist and look numeric)
+            orig = metrics.get('original_mpjpe', None)
+            ref = metrics.get('refined_mpjpe', None)
+            abs_imp = metrics.get('absolute_improvement', None)
+            rel_imp = metrics.get('relative_improvement', None)
+
+            if orig is not None and ref is not None:
+                f.write("\nIMPROVEMENT OVER ORIGINAL:\n")
+                f.write(f"  Original MPJPE: {_fmt_float(orig, '.4f')} pixels\n")
+                f.write(f"  Refined MPJPE:  {_fmt_float(ref, '.4f')} pixels\n")
+                f.write(f"  Absolute Improvement: {_fmt_float(abs_imp, '.4f')} pixels\n")
+                f.write(f"  Relative Improvement: {_fmt_float(rel_imp, '.2f')}%\n")
+        else:
+            # This covers LOO mode and/or when OOD eval is disabled
+            f.write("\nTEST SET PERFORMANCE:\n")
+            f.write("  No test metrics available (evaluation skipped or not applicable).\n")
+
+        # -----------------------
+        # Data statistics
+        # -----------------------
+        f.write("\nDATA STATISTICS:\n")
+        for split, shape in final_results.get('data_shapes', {}).items():
             f.write(f"  {split}: {shape}\n")
 
     logger.info(f"Summary report saved to: {report_path}")
+
 
 
 class MLPDataModule(pl.LightningDataModule):
@@ -325,4 +438,111 @@ class ResidualMLP(pl.LightningModule):
                 'scheduler': scheduler,
                 'monitor': 'val_loss'
             }
+        }
+
+class PoseMLPLOO(pl.LightningModule):
+    """
+    Pose-level MLP for leave-one-out (LOO) reconstruction.
+
+    Input:  per-example pose vector, e.g. [x_0, y_0, ..., x_{K-1}, y_{K-1}, mask_0, ..., mask_{K-1}]
+            where mask_i = 1 if keypoint i is DROPPED, 0 otherwise.
+    Output: predicted coordinates for ALL keypoints [x_hat_0, y_hat_0, ..., x_hat_{K-1}, y_hat_{K-1}].
+
+    During training, we only compute loss on the dropped keypoint(s), as indicated by the mask.
+    """
+
+    def __init__(
+            self,
+            input_dim: int,
+            n_keypoints: int,
+            hidden_dims: List[int] = [512, 256, 128],
+            dropout: float = 0.1,
+            learning_rate: float = 1e-3,
+            weight_decay: float = 1e-4,
+    ):
+        super().__init__()
+        self.save_hyperparameters()
+        self.n_keypoints = int(n_keypoints)
+
+        self.layers = nn.ModuleList()
+        prev_dim = input_dim
+
+        for hidden_dim in hidden_dims:
+            self.layers.append(nn.Linear(prev_dim, hidden_dim))
+            self.layers.append(nn.ReLU())
+            self.layers.append(nn.Dropout(dropout))
+            prev_dim = hidden_dim
+
+        # Output full pose: x,y for each keypoint
+        self.output_layer = nn.Linear(prev_dim, self.n_keypoints * 2)
+
+        self.learning_rate = learning_rate
+        self.weight_decay = weight_decay
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # No residual connection here; we just output a reconstructed pose
+        for layer in self.layers:
+            x = layer(x)
+        return self.output_layer(x)  # [B, 2K]
+
+    def _compute_loss(self, x: torch.Tensor, y_true: torch.Tensor) -> torch.Tensor:
+        """
+        x: [B, D]  (includes mask in last K dims)
+        y_true: [B, 2K]  (original pose coords)
+
+        We only compute loss on the DROPPED keypoint(s) where mask == 1.
+        """
+        B = x.shape[0]
+        K = self.n_keypoints
+        # mask is assumed to be last K features
+        mask = x[:, -K:]  # [B, K], 1 = dropped keypoint
+
+        y_pred = self(x)  # [B, 2K]
+
+        # Reshape for convenience
+        y_pred_reshaped = y_pred.view(B, K, 2)  # [B, K, 2]
+        y_true_reshaped = y_true.view(B, K, 2)  # [B, K, 2]
+
+        # Expand mask to (B, K, 2) so we apply the loss only to dropped joints
+        mask_expanded = mask.unsqueeze(-1).expand_as(y_true_reshaped)  # [B, K, 2]
+
+        diff = (y_pred_reshaped - y_true_reshaped) ** 2  # [B, K, 2]
+        masked_diff = diff * mask_expanded  # [B, K, 2]
+
+        # Avoid divide-by-zero if no dropped joints in a batch
+        denom = mask_expanded.sum()
+        if denom < 1.0:
+            # Fallback: plain MSE on all joints
+            return F.mse_loss(y_pred, y_true)
+
+        loss = masked_diff.sum() / denom
+        return loss
+
+    def training_step(self, batch, batch_idx):
+        x, y_true = batch
+        loss = self._compute_loss(x, y_true)
+        self.log("train_loss", loss, prog_bar=True)
+        return loss
+
+    def validation_step(self, batch, batch_idx):
+        x, y_true = batch
+        loss = self._compute_loss(x, y_true)
+        self.log("val_loss", loss, prog_bar=True)
+        return loss
+
+    def configure_optimizers(self):
+        optimizer = torch.optim.AdamW(
+            self.parameters(),
+            lr=self.learning_rate,
+            weight_decay=self.weight_decay,
+        )
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+            optimizer, mode="min", factor=0.5, patience=10
+        )
+        return {
+            "optimizer": optimizer,
+            "lr_scheduler": {
+                "scheduler": scheduler,
+                "monitor": "val_loss",
+            },
         }
