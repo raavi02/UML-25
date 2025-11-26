@@ -1,5 +1,5 @@
 # BEFORE ANYTHING ELSE: UPDATE YOUR ABSOLUTE PROJECT PATH
-root_dir: E:/UML-25/
+root_dir: /Users/shreyaprabu/Desktop/UML Project/UML-25/
 
 dataset_name: fly
 # dataset_name: fly_toy
