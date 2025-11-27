@@ -201,6 +201,7 @@ def pipeline(config_file: str, for_seed: int | None = None) -> None:
             metrics = {}
 
     elif model_type == "GNN":
+
         cache_file = outputs_dir / "best_result.json"
 
         # ---------- grid search / cached best ----------
@@ -233,6 +234,8 @@ def pipeline(config_file: str, for_seed: int | None = None) -> None:
                 n_keypoints=cfg_d.data.num_keypoints,
                 skeleton=skeleton,
                 keypoints=keypoints,
+                mode=mode,
+                use_confidence_options=[use_conf_flag],
             )
             with open(cache_file, "w") as f:
                 json.dump(best, f, indent=2)
@@ -241,7 +244,7 @@ def pipeline(config_file: str, for_seed: int | None = None) -> None:
         # ---------- evaluation ----------
         use_conf = best["params"]["use_confidence"]
 
-        if run_eval_on_ood:
+        if run_eval_on_ood and mode == "refine":
             X_test, y_test = prepare_data(
                 gt_data=splits["gt_test"],
                 pred_data=splits["pred_test"],

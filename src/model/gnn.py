@@ -8,7 +8,7 @@ import torch
 import pytorch_lightning as pl
 from torch import nn as nn
 from torch.nn import functional as F
-from torch_geometric.nn import GCNConv, global_mean_pool, GATConv
+from torch_geometric.nn import GATConv
 from torch.utils.data import TensorDataset, DataLoader
 
 from src.utils.logging import logger
@@ -30,33 +30,93 @@ def _num_keypoints(cfg: Any) -> int:
     # Works with DictConfig (OmegaConf) or plain dict
     return int(cfg.data.num_keypoints)
 
-def build_gnn_model(params: Dict[str, Any], n_keypoints: int) -> pl.LightningModule:
-    use_conf = params.get("use_confidence", True)
-    input_dim = n_keypoints * 2 + (n_keypoints if use_conf else 0)
-    skeleton_indices=convert_labels_to_indices(params["keypoints"], params["skeleton"])
-    return ResidualGNN(
-        input_dim=input_dim,
-        n_keypoints=n_keypoints,
-        hidden_dims=params["hidden_dims"],
-        dropout=params["dropout"],
-        learning_rate=params["learning_rate"],
-        weight_decay=params["weight_decay"],
-        skeleton=skeleton_indices,
-    )
-
-def build_gnn_datamodule(params: Dict[str, Any], splits: Dict[str, Any]) -> pl.LightningDataModule:
+def build_gnn_model(
+    params: Dict[str, Any],
+    n_keypoints: int,
+    mode: str = "refine",
+    loo_input_dim: int | None = None,
+    skeleton: List[Tuple[str, str]] | None = None,
+    keypoints: List[str] | None = None,
+) -> pl.LightningModule:
+    """
+    mode:
+      - 'refine': ResidualGNN supervised refiner (residual on coords)
+      - 'loo':    PoseGNNLOO self-supervised leave-one-out model
+    """
     use_conf = params.get("use_confidence", True)
 
-    X_all, y_all = prepare_data(splits["gt_train"], splits["pred_train"], use_confidence=use_conf)
+    if keypoints is None or skeleton is None:
+        raise ValueError("build_gnn_model requires keypoints and skeleton lists.")
+
+    # Convert labeled skeleton to index-based edge_index (2, num_edges)
+    skeleton_indices = convert_labels_to_indices(keypoints, skeleton)
+
+    if mode == "refine":
+        input_dim = n_keypoints * 2 + (n_keypoints if use_conf else 0)
+        return ResidualGNN(
+            input_dim=input_dim,
+            n_keypoints=n_keypoints,
+            hidden_dims=params["hidden_dims"],
+            hidden_heads=params["hidden_heads"],
+            skeleton=skeleton_indices,
+            negative_slope=params.get("negative_slope", 0.2),
+            dropout=params["dropout"],
+            learning_rate=params["learning_rate"],
+            weight_decay=params["weight_decay"],
+        )
+
+    elif mode == "loo":
+        if loo_input_dim is None:
+            raise ValueError("loo_input_dim must be provided when mode='loo'.")
+        return PoseGNNLOO(
+            input_dim=loo_input_dim,
+            n_keypoints=n_keypoints,
+            skeleton=skeleton_indices,
+            hidden_dims=params["hidden_dims"],
+            hidden_heads=params["hidden_heads"],
+            negative_slope=params.get("negative_slope", 0.2),
+            dropout=params["dropout"],
+            learning_rate=params["learning_rate"],
+            weight_decay=params["weight_decay"],
+            use_confidence=use_conf,
+        )
+
+    else:
+        raise ValueError(f"Unknown mode: {mode}")
+
+
+def build_gnn_datamodule(
+    params: Dict[str, Any],
+    splits: Dict[str, Any],
+    mode: str = "refine",
+) -> pl.LightningDataModule:
+    use_conf = params.get("use_confidence", True)
+
+    if mode == "refine":
+        X_all, y_all = prepare_data(
+            splits["gt_train"],
+            splits["pred_train"],
+            use_confidence=use_conf,
+        )
+    elif mode == "loo":
+        from src.data_loading.load_data import prepare_loo_data_from_preds
+        X_all, y_all = prepare_loo_data_from_preds(
+            pred_data=splits["pred_train"],
+            use_confidence=use_conf,
+        )
+    else:
+        raise ValueError(f"Unknown mode: {mode}")
+
     tr_idx = splits["tr_idx"]
     va_idx = splits["va_idx"]
-    assert tr_idx.max() < len(X_all) and va_idx.max() < len(X_all), \
-        f"indices out of bounds: X_all len={len(X_all)}, max tr={tr_idx.max()}, max va={va_idx.max()}"
 
     X_train, y_train = X_all[tr_idx], y_all[tr_idx]
     X_val, y_val = X_all[va_idx], y_all[va_idx]
 
-    return GNNDataModule(X_train, y_train, X_val, y_val, batch_size=params["batch_size"])
+    return GNNDataModule(
+        X_train, y_train, X_val, y_val,
+        batch_size=params["batch_size"],
+    )
 
 def evaluate_gnn_checkpoint(best_path: str, X_test: np.ndarray, y_test: np.ndarray,
                             output_dir: str | Path = "gnn_results") -> Dict[str, float]:
@@ -154,14 +214,16 @@ def run_gnn_grid_search(
     n_keypoints: int,
     skeleton: List[Tuple[str, str]],
     keypoints: List[str],
+    mode: str = "refine",
+    use_confidence_options: List[bool] | None = None,
 ) -> Dict[str, Any]:
     from src.model.grid_search import GridSearchRunner
 
+    # Ensure plain Python containers (in case cfg objects are passed)
     keypoints_list = list(keypoints)
-
-    # skeleton: e.g. ListConfig([['nose', 'ear'], ['ear', 'neck'], ...])
-    # → [('nose', 'ear'), ('ear', 'neck'), ...]
     skeleton_list = [tuple(edge) for edge in skeleton]
+
+    use_conf_opts = use_confidence_options if use_confidence_options is not None else [True, False]
 
     param_grid = {
         "hidden_dims": [[16, 8], [8, 4], [16, 8, 4]],
@@ -170,17 +232,44 @@ def run_gnn_grid_search(
         "negative_slope": [0.0, 0.2],
         "learning_rate": [1e-3, 5e-4],
         "weight_decay": [1e-4, 1e-5],
-        "use_confidence": [True, False],
+        "use_confidence": use_conf_opts,
         "batch_size": [64, 128],
-        "skeleton": [skeleton_list],
-        "keypoints": [keypoints_list],
     }
+
+    def _build_model_for_params(params: Dict[str, Any], n_k: int) -> pl.LightningModule:
+        use_conf = params.get("use_confidence", True)
+
+        if mode == "refine":
+            loo_input_dim = None
+        else:
+            # coords (2K) + optional conf (K) + mask (K)
+            base_dim = 2 * n_k + (n_k if use_conf else 0)
+            loo_input_dim = base_dim + n_k
+
+        return build_gnn_model(
+            params=params,
+            n_keypoints=n_k,
+            mode=mode,
+            loo_input_dim=loo_input_dim,
+            skeleton=skeleton_list,
+            keypoints=keypoints_list,
+        )
+
+    def _build_datamodule_for_params(
+        params: Dict[str, Any],
+        splits_: Dict[str, Any],
+    ) -> pl.LightningDataModule:
+        return build_gnn_datamodule(
+            params=params,
+            splits=splits_,
+            mode=mode,
+        )
 
     runner = GridSearchRunner(
         output_dir=output_dir,
         param_grid=param_grid,
-        build_model=build_gnn_model,
-        build_datamodule=build_gnn_datamodule,
+        build_model=_build_model_for_params,
+        build_datamodule=_build_datamodule_for_params,
         monitor_metric="val_loss",
         mode="min",
         patience=15,
@@ -192,7 +281,7 @@ def run_gnn_grid_search(
     if not results:
         raise RuntimeError("No successful GNN runs.")
     best = min(results, key=lambda r: r["best_score"])
-    return best
+    return best  # {params, best_score, best_path}
 
 
 def create_summary_report(final_results: dict, output_dir: str):
@@ -370,4 +459,193 @@ class ResidualGNN(pl.LightningModule):
                 'scheduler': scheduler,
                 'monitor': 'val_loss'
             }
+        }
+
+
+class PoseGNNLOO(pl.LightningModule):
+    """
+    Graph-based pose model for leave-one-out (LOO) reconstruction.
+
+    Input x:  [coords (2K), optional conf (K), mask (K)]
+              shape (B, 2K + (K if use_confidence else 0) + K)
+
+      - coords: flattened [x0, y0, ..., x_{K-1}, y_{K-1}]
+      - confs:  [c0, ..., c_{K-1}]  (optional)
+      - mask:   [m0, ..., m_{K-1}], where m_j = 1 if keypoint j is DROPPED
+
+    Target y_true: original coords, shape (B, 2K).
+
+    We compute loss only on dropped keypoints (mask == 1), mirroring PoseMLPLOO.
+    """
+
+    def __init__(
+        self,
+        input_dim: int,
+        n_keypoints: int,
+        skeleton: np.ndarray,
+        hidden_dims: List[int] = [16, 8],
+        hidden_heads: List[int] = [8, 4],
+        negative_slope: float = 0.2,
+        dropout: float = 0.1,
+        learning_rate: float = 1e-3,
+        weight_decay: float = 1e-4,
+        use_confidence: bool = True,
+    ):
+        super().__init__()
+        self.save_hyperparameters()
+        self.n_keypoints = int(n_keypoints)
+        self.use_confidence = bool(use_confidence)
+
+        # edge_index (2, num_edges)
+        self.skeleton = torch.tensor(skeleton, dtype=torch.long)
+
+        # Per-node feature dimension = input_dim // K
+        feat_dim = input_dim // self.n_keypoints
+
+        self.layers = nn.ModuleList()
+        prev_dim = feat_dim
+        prev_head = 1
+
+        for hidden_dim, hidden_head in zip(hidden_dims, hidden_heads):
+            # GATConv over all nodes in the batch graph
+            self.layers.append(
+                GATConv(
+                    in_channels=prev_dim * prev_head,
+                    out_channels=hidden_dim,
+                    heads=hidden_head,
+                    negative_slope=negative_slope,
+                    concat=True,
+                )
+            )
+            # BatchNorm over (num_nodes_in_batch, C)
+            self.layers.append(nn.BatchNorm1d(hidden_dim * hidden_head))
+            self.layers.append(nn.ReLU())
+            self.layers.append(nn.Dropout(dropout))
+
+            prev_dim = hidden_dim
+            prev_head = hidden_head
+
+        # Per-node output: 2D coords
+        self.output_layer = nn.Linear(prev_dim * prev_head, 2)
+
+        self.learning_rate = learning_rate
+        self.weight_decay = weight_decay
+
+    # ---- helpers to parse input into node features + mask ----
+
+    def _split_input(
+        self, x: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """
+        x: (B, D = 2K + (K if use_conf else 0) + K)
+
+        Returns:
+          node_feats: (B, K, F)  where F = 3 or 4
+          mask:       (B, K)     1 = dropped keypoint
+          coords_true:(B, 2K)    flattened true coords (for convenience)
+        """
+        B = x.shape[0]
+        K = self.n_keypoints
+
+        base = 2 * K
+        coords_flat = x[:, :base]  # (B, 2K)
+        coords = coords_flat.view(B, K, 2)  # (B, K, 2)
+
+        if self.use_confidence:
+            conf_start = base
+            conf_end = conf_start + K
+            conf = x[:, conf_start:conf_end].view(B, K, 1)  # (B, K, 1)
+            mask = x[:, conf_end : conf_end + K].view(B, K)  # (B, K)
+            mask_unsq = mask.unsqueeze(-1)  # (B, K, 1)
+            node_feats = torch.cat([coords, conf, mask_unsq], dim=-1)  # (B, K, 4)
+        else:
+            # no conf: coords + mask
+            mask = x[:, base : base + K].view(B, K)  # (B, K)
+            mask_unsq = mask.unsqueeze(-1)  # (B, K, 1)
+            node_feats = torch.cat([coords, mask_unsq], dim=-1)  # (B, K, 3)
+
+        return node_feats, mask, coords_flat
+
+    # ---- forward & loss ----
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Returns: predicted coords, shape (B, 2K)
+        """
+        node_feats, mask, coords_flat = self._split_input(x)
+        B, K, F = node_feats.shape
+
+        # Flatten nodes into a single batch graph
+        h = node_feats.reshape(B * K, F)
+
+        # Build batched edge_index by offsetting node ids per example
+        edge_index_list = []
+        for i in range(B):
+            edge_index_list.append(self.skeleton + i * K)
+        edge_index = torch.cat(edge_index_list, dim=1)  # (2, E_total)
+
+        for layer in self.layers:
+            if isinstance(layer, GATConv):
+                h = layer(h, edge_index=edge_index)
+            else:
+                h = layer(h)
+
+        # Back to (B, K, feat_dim)
+        h = h.reshape(B, K, -1)
+        coords_pred = self.output_layer(h)  # (B, K, 2)
+        return coords_pred.reshape(B, 2 * K)  # (B, 2K)
+
+    def _compute_loss(self, x: torch.Tensor, y_true: torch.Tensor) -> torch.Tensor:
+        """
+        Only penalize dropped keypoints (mask == 1).
+        """
+        node_feats, mask, _ = self._split_input(x)
+        B, K = mask.shape
+
+        y_pred = self.forward(x)  # (B, 2K)
+
+        y_pred_reshaped = y_pred.view(B, K, 2)
+        y_true_reshaped = y_true.view(B, K, 2)
+
+        mask_expanded = mask.unsqueeze(-1).expand_as(y_true_reshaped)  # (B, K, 2)
+        diff = (y_pred_reshaped - y_true_reshaped) ** 2
+        masked_diff = diff * mask_expanded
+
+        denom = mask_expanded.sum()
+        if denom < 1.0:
+            # Fallback: plain MSE on all joints if for some reason no drops in batch
+            return F.mse_loss(y_pred, y_true)
+
+        loss = masked_diff.sum() / denom
+        return loss
+
+    # ---- Lightning hooks ----
+
+    def training_step(self, batch, batch_idx):
+        x, y_true = batch
+        loss = self._compute_loss(x, y_true)
+        self.log("train_loss", loss, prog_bar=True)
+        return loss
+
+    def validation_step(self, batch, batch_idx):
+        x, y_true = batch
+        loss = self._compute_loss(x, y_true)
+        self.log("val_loss", loss, prog_bar=True)
+        return loss
+
+    def configure_optimizers(self):
+        optimizer = torch.optim.AdamW(
+            self.parameters(),
+            lr=self.learning_rate,
+            weight_decay=self.weight_decay,
+        )
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+            optimizer, mode="min", factor=0.5, patience=10
+        )
+        return {
+            "optimizer": optimizer,
+            "lr_scheduler": {
+                "scheduler": scheduler,
+                "monitor": "val_loss",
+            },
         }
