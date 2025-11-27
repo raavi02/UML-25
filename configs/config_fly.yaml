@@ -1,5 +1,5 @@
 # BEFORE ANYTHING ELSE: UPDATE YOUR ABSOLUTE PROJECT PATH
-root_dir: E:/UML-25/
+root_dir: /home/rg3637/UML-25
 
 data:
   dataset_name: fly

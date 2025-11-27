@@ -20,3 +20,7 @@ __pycache__/
 .vscode/
 
 logs/
+
+outputs/
+
+lightning_logs/

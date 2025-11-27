@@ -19,6 +19,7 @@ from src.data_loading.load_data import (
 from src.model.mlp import (
     run_mlp_grid_search,
     evaluate_mlp_checkpoint,
+    save_predictions,
     create_summary_report as create_mlp_summary_report,
 )
 from src.model.gnn import (
@@ -192,7 +193,10 @@ def pipeline(config_file: str, for_seed: int | None = None) -> None:
                 X_test=X_test,
                 y_test=y_test,
                 output_dir=outputs_dir,
+                cfg_d=cfg_d,
+                save_preds=cfg_pipe.train.save_predictions
             )
+              
         else:
             # In LOO mode we don't yet have a standard L2-to-GT evaluation;
             # or if run_eval_on_ood is False, we skip test eval.
@@ -256,6 +260,8 @@ def pipeline(config_file: str, for_seed: int | None = None) -> None:
                 X_test=X_test,
                 y_test=y_test,
                 output_dir=outputs_dir,
+                cfg_d=cfg_d,
+                save_preds=cfg_pipe.train.save_predictions
             )
         else:
             X_test = np.empty((0, feature_dim))

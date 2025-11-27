@@ -1,9 +1,13 @@
 # src/models/mlp.py
 from __future__ import annotations
+import os
 from pathlib import Path
 from typing import Any, Dict, Optional, List
 import json
 import numpy as np
+import pandas as pd
+import numpy as np
+from pathlib import Path
 import torch
 import pytorch_lightning as pl
 from torch import nn as nn
@@ -94,7 +98,7 @@ def build_mlp_datamodule(
 # ---- evaluation for the selected best model ----
 
 def evaluate_mlp_checkpoint(best_path: str, X_test: np.ndarray, y_test: np.ndarray,
-                            output_dir: str | Path = "mlp_results") -> Dict[str, float]:
+                            output_dir: str | Path = "mlp_results", cfg_d=None, save_preds=False) -> Dict[str, float]:
     """Evaluate a trained MLP checkpoint on given test arrays and log detailed metrics."""
 
     output_dir = Path(output_dir)
@@ -177,6 +181,9 @@ def evaluate_mlp_checkpoint(best_path: str, X_test: np.ndarray, y_test: np.ndarr
     with open(results_file, "w") as f:
         json.dump(serializable_metrics, f, indent=2)
     logger.info(f"Detailed results saved to: {results_file}")
+
+    if save_preds:
+        save_predictions(cfg_d, eval_dir, y_pred)
 
     return metrics
 
@@ -323,6 +330,70 @@ def create_summary_report(final_results: dict, output_dir: str):
             f.write(f"  {split}: {shape}\n")
 
     logger.info(f"Summary report saved to: {report_path}")
+
+
+def save_predictions(cfg_d, eval_dir, prediction_array, ood=True):
+    """
+    Save model predictions into the original GT CSV format.
+    
+    Args:
+        cfg_d: config dictionary
+        prediction_array: numpy array of shape (total_samples, 2K)
+        ood: whether to use _new suffix
+    """
+
+    suffix = "_new" if ood else ""
+    data_dir = cfg_d.data.gt_data_dir   # ORIGINAL GT directory
+    output_dir = eval_dir  # Directory where you want to save new CSVs
+
+    idx = 0  # pointer into prediction_array
+
+    for cam in cfg_d.data.view_names:
+
+        path = Path(data_dir) / f"CollectedData_{cam}{suffix}.csv"
+        if not path.exists():
+            print(f"GT file not found for {cam}, skipping.")
+            continue
+
+        # --- Load original file with multi-index ---
+        df_original = pd.read_csv(path, header=[0, 1, 2])
+
+        # Flatten header same way as loader
+        flat_cols = ['_'.join(col).strip() for col in df_original.columns]
+        df_flat = df_original.copy()
+        df_flat.columns = flat_cols
+
+        # --- Identify coordinate columns in the SAME ORDER used by prepare_data ---
+        coord_cols = [
+            col for col in flat_cols
+            if any(kp in col and coord in col
+                   for kp in cfg_d.data.keypoint_names
+                   for coord in ['x', 'y'])
+        ]
+
+        num_rows = df_flat.shape[0]
+        num_coords_per_frame = len(coord_cols)
+
+        # Slice predictions for this camera
+        preds_cam = prediction_array[idx:idx + num_rows, :num_coords_per_frame]
+        idx += num_rows   # advance pointer
+
+        # Replace only coordinate numbers, keep everything else the same
+        df_flat.loc[:, coord_cols] = preds_cam
+
+        # --- Now reconstruct MultiIndex header for saving ---
+
+        # Split flattened names back into tuples
+        column_tuples = [tuple(name.split("_")) for name in flat_cols]
+        df_save = df_flat.copy()
+        df_save.columns = pd.MultiIndex.from_tuples(column_tuples)
+
+        # Save
+        os.makedirs(Path(output_dir) / "refiner_predictions", exist_ok=True)
+        output_path = Path(output_dir) /f"refiner_predictions"/f"CollectedData_{cam}{suffix}_refined.csv"
+        df_save.to_csv(output_path, index=False)
+
+        print(f"Saved predictions for {cam} → {output_path}")
 
 
 
