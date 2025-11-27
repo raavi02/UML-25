@@ -19,7 +19,12 @@ from src.data_loading.load_data import (
 from src.model.mlp import (
     run_mlp_grid_search,
     evaluate_mlp_checkpoint,
-    create_summary_report,
+    create_summary_report as create_mlp_summary_report,
+)
+from src.model.gnn import (
+    run_gnn_grid_search,
+    evaluate_gnn_checkpoint,
+    create_summary_report as create_gnn_summary_report,
 )
 from src.utils.io import load_cfgs
 from src.utils.logging import logger
@@ -196,10 +201,63 @@ def pipeline(config_file: str, for_seed: int | None = None) -> None:
             metrics = {}
 
     elif model_type == "GNN":
-        # Placeholder for future GNN pipeline
-        raise NotImplementedError("GNN path to be added.")
-    else:
-        raise ValueError("model_type must be 'MLP' or 'GNN'")
+        cache_file = outputs_dir / "best_result.json"
+
+        # ---------- grid search / cached best ----------
+        if not run_grid_search:
+            if not cache_file.exists():
+                raise FileNotFoundError(
+                    f"run_grid_search is False and cached params not found at {cache_file}. "
+                    "Run once with run_grid_search=True to generate best_result.json."
+                )
+            logger.info(
+                f"Skipping grid search (run_grid_search=False). "
+                f"Loading cached params → {cache_file.name}."
+            )
+            with open(cache_file, "r") as f:
+                best = json.load(f)
+
+        elif cache_file.exists() and not getattr(cfg_pipe.train, "force_grid", False):
+            logger.info(
+                f"Found cached best params → {cache_file.name}, skipping grid search."
+            )
+            with open(cache_file, "r") as f:
+                best = json.load(f)
+
+        else:
+            logger.info("Running grid search for best GNN params...")
+            best = run_gnn_grid_search(
+                splits=splits,
+                output_dir=outputs_dir,
+                max_epochs=max_epochs,
+                n_keypoints=cfg_d.data.num_keypoints,
+                skeleton=skeleton,
+                keypoints=keypoints,
+            )
+            with open(cache_file, "w") as f:
+                json.dump(best, f, indent=2)
+            logger.info(f"Saved best GNN grid-search result → {cache_file}")
+
+        # ---------- evaluation ----------
+        use_conf = best["params"]["use_confidence"]
+
+        if run_eval_on_ood:
+            X_test, y_test = prepare_data(
+                gt_data=splits["gt_test"],
+                pred_data=splits["pred_test"],
+                use_confidence=use_conf,
+            )
+
+            metrics = evaluate_gnn_checkpoint(
+                best_path=best["best_path"],
+                X_test=X_test,
+                y_test=y_test,
+                output_dir=outputs_dir,
+            )
+        else:
+            X_test = np.empty((0, feature_dim))
+            y_test = np.empty((0, cfg_d.data.num_keypoints * 2))
+            metrics = {}
 
     # -------------------------------------------
     # Collect results and export summary
@@ -216,7 +274,10 @@ def pipeline(config_file: str, for_seed: int | None = None) -> None:
         "mode": mode,
         "timestamp": pd.Timestamp.now().isoformat(),
     }
-    create_summary_report(final_results, outputs_dir)
+    if model_type == "MLP":
+        create_mlp_summary_report(final_results, outputs_dir)
+    elif model_type == "GNN":
+        create_gnn_summary_report(final_results, outputs_dir)
     logger.info("Summary report created.")
     logger.info(f"Path: {Path(cfg_pipe.outputs_dir) / 'summary_report.txt'}")
 
