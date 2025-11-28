@@ -12,8 +12,8 @@ outputs_dir: ${root_dir}/outputs/${dataset_name}
 
 train:
   model_type: MLP  # or MLP/GNN
-  mode: refine  # or loo/refine
-  seed: 42  # let's always use 42 for refine testing, 0 for loo testing
+  mode: loo  # or loo/refine
+  seed: 0  # let's always use 42 for refine testing, 0 for loo testing
   max_epochs: 1000
   val_ratio: 0.2
 
