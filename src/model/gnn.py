@@ -9,6 +9,7 @@ import numpy as np
 import torch
 import pytorch_lightning as pl
 from torch import nn as nn
+import matplotlib.pyplot as plt
 from torch.nn import functional as F
 from torch_geometric.nn import GATConv
 from torch.utils.data import TensorDataset, DataLoader
