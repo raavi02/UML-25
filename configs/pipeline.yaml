@@ -12,8 +12,9 @@ outputs_dir: ${root_dir}/outputs/${dataset_name}
 
 train:
   model_type: GNN  # or MLP/GNN
+  use_gat: False # Use GAT or not when model type is GNN
   mode: refine # or loo/refine
-  seed: 42  # let's always use 42 for refine testing, 0 for loo testing
+  seed: 21  # let's always use 42 for refine testing, 0 for loo testing
   max_epochs: 1000
   val_ratio: 0.2
 

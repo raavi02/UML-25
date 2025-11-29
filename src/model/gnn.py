@@ -11,7 +11,7 @@ import pytorch_lightning as pl
 from torch import nn as nn
 import matplotlib.pyplot as plt
 from torch.nn import functional as F
-from torch_geometric.nn import GATConv
+from torch_geometric.nn import GATConv, GCNConv
 from torch.utils.data import TensorDataset, DataLoader
 
 from src.utils.logging import logger
@@ -66,6 +66,7 @@ def build_gnn_model(
             dropout=params["dropout"],
             learning_rate=params["learning_rate"],
             weight_decay=params["weight_decay"],
+            use_gat=params.get("use_gat", False)
         )
 
     elif mode == "loo":
@@ -222,6 +223,7 @@ def run_gnn_grid_search(
     keypoints: List[str],
     mode: str = "refine",
     use_confidence_options: List[bool] | None = None,
+    use_gat = False
 ) -> Dict[str, Any]:
     from src.model.grid_search import GridSearchRunner
 
@@ -230,17 +232,31 @@ def run_gnn_grid_search(
     skeleton_list = [tuple(edge) for edge in skeleton]
 
     use_conf_opts = use_confidence_options if use_confidence_options is not None else [True, False]
+    if use_gat:
+        param_grid = {
+            "hidden_dims": [[16, 8], [8, 4], [16, 8, 4]],
+            "hidden_heads": [[8, 4], [4, 2], [8, 4, 2]],
+            "dropout": [0.1, 0.2],
+            "negative_slope": [0.0, 0.2],
+            "learning_rate": [1e-3, 5e-4],
+            "weight_decay": [1e-4, 1e-5],
+            "use_confidence": use_conf_opts,
+            "batch_size": [64, 128],
+            "use_gat": [use_gat]
+        }
+    else:
+        param_grid = {
+            "hidden_dims": [[32, 32], [64, 32], [64, 32, 32]],
+            "hidden_heads": [[1]],
+            "dropout": [0.1, 0.2],
+            "negative_slope": [0.0, 0.2],
+            "learning_rate": [1e-3, 5e-4],
+            "weight_decay": [1e-4, 1e-5],
+            "use_confidence": use_conf_opts,
+            "batch_size": [64, 128],
+            "use_gat": [use_gat]
+        }
 
-    param_grid = {
-        "hidden_dims": [[16, 8], [8, 4], [16, 8, 4]],
-        "hidden_heads": [[8, 4], [4, 2], [8, 4, 2]],
-        "dropout": [0.1, 0.2],
-        "negative_slope": [0.0, 0.2],
-        "learning_rate": [1e-3, 5e-4],
-        "weight_decay": [1e-4, 1e-5],
-        "use_confidence": use_conf_opts,
-        "batch_size": [64, 128],
-    }
 
     def _build_model_for_params(params: Dict[str, Any], n_k: int) -> pl.LightningModule:
         use_conf = params.get("use_confidence", True)
@@ -509,28 +525,43 @@ class ResidualGNN(pl.LightningModule):
                  negative_slope: float = 0.2,
                  dropout: float = 0.1,
                  learning_rate: float = 1e-3,
-                 weight_decay: float = 1e-4):
+                 weight_decay: float = 1e-4,
+                 use_gat: bool = False):
         super().__init__()
         self.save_hyperparameters()
         self.n_keypoints = int(n_keypoints)
         # self.skeleton = torch.tensor(skeleton, dtype=torch.long)  # shape (2, num_edges)
         self.register_buffer("skeleton", torch.tensor(skeleton, dtype=torch.long))
         self.layers = nn.ModuleList()
+        self.use_gat = use_gat
         prev_dim = input_dim//n_keypoints
         prev_head=1
+        if not self.use_gat:
+            hidden_heads = [1] * len(hidden_dims)   # <-- force heads=1 for GCN
 
         # Build hidden layers
         for hidden_dim,hidden_head in zip(hidden_dims,hidden_heads):
-            self.layers.append(GATConv(in_channels=prev_dim*prev_head,
+            if self.use_gat:
+                conv = GATConv(in_channels=prev_dim*prev_head,
                                        out_channels=hidden_dim,
                                        heads=hidden_head,
                                        negative_slope=negative_slope,
-                                       concat=True))
-            self.layers.append(nn.BatchNorm1d(hidden_dim * hidden_head))
+                                       concat=True)
+                out_dim_for_norm = hidden_dim * hidden_head
+                prev_head = hidden_head
+            else:
+                conv = GCNConv(
+                    in_channels=prev_dim * prev_head,
+                    out_channels=hidden_dim,
+                )
+                out_dim_for_norm = hidden_dim
+                prev_head = 1  # CHANGED: no heads in GCN, so keep head factor = 1
+
+            self.layers.append(conv)
+            self.layers.append(nn.BatchNorm1d(out_dim_for_norm))
             self.layers.append(nn.ReLU())
             self.layers.append(nn.Dropout(dropout))
             prev_dim = hidden_dim
-            prev_head=hidden_head
 
         # Output layer - predicts coordinate adjustments
         self.output_layer = nn.Linear(prev_dim*prev_head, 2)
@@ -557,7 +588,7 @@ class ResidualGNN(pl.LightningModule):
         dim=1
         )
         for layer in self.layers:
-            x = layer(x, edge_index=edge_index) if isinstance(layer, GATConv) else layer(x)
+            x = layer(x, edge_index=edge_index) if isinstance(layer, (GATConv, GCNConv)) else layer(x)
 
         #Reshape back to (batch_size, n_keypoints, feature_dim) for the linear layer
         x = x.reshape(batch_size, self.n_keypoints, -1)
