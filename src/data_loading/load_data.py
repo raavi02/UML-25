@@ -12,7 +12,7 @@ def load_gt_data(cfg_d : DictConfig, ood: bool = False) -> Dict[str, pd.DataFram
     """Load ground truth data for all cameras."""
     gt_data = {}
     suffix = "_new" if ood else ""
-    data_dir = cfg_d.data.gt_data_dir
+    data_dir = getattr(cfg_d.data, "gt_data_dir_ood", cfg_d.data.gt_data_dir) if ood else cfg_d.data.gt_data_dir
     for cam in cfg_d.data.view_names:
         path = Path(data_dir) / f"CollectedData_{cam}{suffix}.csv"
         
@@ -37,7 +37,7 @@ def load_pred_data(cfg_d : DictConfig, ood: bool = False) -> Dict[str, pd.DataFr
     """Load prediction data for all cameras."""
     pred_data = {}
     suffix = "_new" if ood else ""
-    data_dir = cfg_d.data.preds_data_dir
+    data_dir = getattr(cfg_d.data, "preds_data_dir_ood", cfg_d.data.preds_data_dir) if ood else cfg_d.data.preds_data_dir
     for cam in cfg_d.data.view_names:
         path = Path(data_dir) / f"predictions_{cam}{suffix}.csv"
         
