@@ -279,6 +279,9 @@ def run_gnn_grid_search(
         mode="min",
         patience=15,
         max_epochs=max_epochs,
+        # Force CPU when only MPS is present because torch-geometric
+        # layers can hit placeholder allocation issues on MPS.
+        accelerator="gpu" if torch.cuda.is_available() else "cpu",
         n_keypoints=n_keypoints,
     )
 
@@ -368,7 +371,14 @@ def save_predictions(cfg_d, eval_dir, prediction_array, ood=True):
 
         # Slice predictions for this camera
         preds_cam = prediction_array[idx:idx + num_rows, :num_coords_per_frame]
-        idx += num_rows   # advance pointer
+        idx += preds_cam.shape[0]   # advance pointer based on what we actually sliced
+
+        if preds_cam.shape[0] != num_rows:
+            print(
+                f"Prediction rows ({preds_cam.shape[0]}) != GT rows ({num_rows}) "
+                f"for {cam}{suffix}; skipping save for this camera."
+            )
+            continue
 
         # Replace only coordinate numbers, keep everything else the same
         df_flat.loc[:, coord_cols] = preds_cam
@@ -441,25 +451,36 @@ class ResidualGNN(pl.LightningModule):
         self.n_keypoints = int(n_keypoints)
         self.skeleton = torch.tensor(skeleton, dtype=torch.long)  # shape (2, num_edges)
 
+        # Features per node (x, y, and optionally confidence)
+        if input_dim % self.n_keypoints != 0:
+            raise ValueError(
+                f"input_dim ({input_dim}) must be divisible by n_keypoints ({self.n_keypoints})."
+            )
+        self.node_feat_dim = input_dim // self.n_keypoints
+
         self.layers = nn.ModuleList()
-        prev_dim = input_dim//n_keypoints
-        prev_head=1
+        prev_dim = self.node_feat_dim
+        prev_head = 1
 
         # Build hidden layers
-        for hidden_dim,hidden_head in zip(hidden_dims,hidden_heads):
-            self.layers.append(GATConv(in_channels=prev_dim*prev_head,
-                                       out_channels=hidden_dim,
-                                       heads=hidden_head,
-                                       negative_slope=negative_slope,
-                                       concat=True))
+        for hidden_dim, hidden_head in zip(hidden_dims, hidden_heads):
+            self.layers.append(
+                GATConv(
+                    in_channels=prev_dim * prev_head,
+                    out_channels=hidden_dim,
+                    heads=hidden_head,
+                    negative_slope=negative_slope,
+                    concat=True,
+                )
+            )
             self.layers.append(nn.BatchNorm1d(hidden_dim * hidden_head))
             self.layers.append(nn.ReLU())
             self.layers.append(nn.Dropout(dropout))
             prev_dim = hidden_dim
-            prev_head=hidden_head
+            prev_head = hidden_head
 
         # Output layer - predicts coordinate adjustments
-        self.output_layer = nn.Linear(prev_dim*prev_head, 2)
+        self.output_layer = nn.Linear(prev_dim * prev_head, 2)
 
         self.learning_rate = learning_rate
         self.weight_decay = weight_decay
@@ -467,27 +488,27 @@ class ResidualGNN(pl.LightningModule):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         base = self.n_keypoints * 2
         residual = x[:, :base]  # Original coordinates
-        x=x.reshape(-1, self.n_keypoints, 2)
+        x = x.reshape(-1, self.n_keypoints, self.node_feat_dim)
 
-        #We now need to reshape x for GNN processing of shape (keypoints*batch_size,2),
-        # creating edge_index for each sample in the batch
-
+        # Reshape for GNN processing: (batch_size * n_keypoints, node_feat_dim)
+        # and create edge_index for each sample in the batch
         batch_size = x.shape[0]
-        x = x.reshape(batch_size * self.n_keypoints, 2)
-        edge_index_list=[]
+        x = x.reshape(batch_size * self.n_keypoints, self.node_feat_dim)
+
+        edge_index_list = []
         for i in range(batch_size):
-            edge_index_list.append(self.skeleton + i*self.n_keypoints)
-        edge_index=torch.cat(edge_index_list,dim=1)  # shape (2, num_edges * batch_size)
+            edge_index_list.append(self.skeleton + i * self.n_keypoints)
+        edge_index = torch.cat(edge_index_list, dim=1)  # shape (2, num_edges * batch_size)
 
         for layer in self.layers:
             x = layer(x, edge_index=edge_index) if isinstance(layer, GATConv) else layer(x)
 
-        #Reshape back to (batch_size, n_keypoints, feature_dim) for the linear layer
+        # Reshape back to (batch_size, n_keypoints, feature_dim) for the linear layer
         x = x.reshape(batch_size, self.n_keypoints, -1)
         adjustments = self.output_layer(x)
 
-        #Reshape adjustments back to (batch_size, n_keypoints*2)
-        adjustments=adjustments.reshape(batch_size, -1)
+        # Reshape adjustments back to (batch_size, n_keypoints*2)
+        adjustments = adjustments.reshape(batch_size, -1)
 
         # Residual connection: original coords + learned adjustments
         return residual + adjustments

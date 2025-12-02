@@ -376,7 +376,14 @@ def save_predictions(cfg_d, eval_dir, prediction_array, ood=True):
 
         # Slice predictions for this camera
         preds_cam = prediction_array[idx:idx + num_rows, :num_coords_per_frame]
-        idx += num_rows   # advance pointer
+        idx += preds_cam.shape[0]  # advance pointer based on what we actually sliced
+
+        if preds_cam.shape[0] != num_rows:
+            print(
+                f"Prediction rows ({preds_cam.shape[0]}) != GT rows ({num_rows}) "
+                f"for {cam}{suffix}; skipping save for this camera."
+            )
+            continue
 
         # Replace only coordinate numbers, keep everything else the same
         df_flat.loc[:, coord_cols] = preds_cam

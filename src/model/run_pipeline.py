@@ -50,8 +50,10 @@ def pipeline(config_file: str, for_seed: int | None = None) -> None:
     dataset = cfg_pipe.dataset_name
     data_dir = cfg_pipe.dataset_dir
     base_outputs_dir = Path(cfg_pipe.outputs_dir)
-    gt_dir = os.path.join(data_dir, "ground_truth")
-    preds_dir = os.path.join(data_dir, "predictions")
+    gt_dir = cfg_d.data.gt_data_dir
+    preds_dir = cfg_d.data.preds_data_dir
+    gt_dir_ood = getattr(cfg_d.data, "gt_data_dir_ood", gt_dir)
+    preds_dir_ood = getattr(cfg_d.data, "preds_data_dir_ood", preds_dir)
 
     # Dataset parameters
     cameras = cfg_d.data.view_names
@@ -77,7 +79,9 @@ def pipeline(config_file: str, for_seed: int | None = None) -> None:
     print(f"Data Directory: {data_dir}")
     print(f"Output Directory: {outputs_dir}")
     print(f"Ground Truth Directory: {gt_dir}")
+    print(f"Ground Truth Directory (OOD): {gt_dir_ood}")
     print(f"Predictions Directory: {preds_dir}")
+    print(f"Predictions Directory (OOD): {preds_dir_ood}")
     print(f"Camera views: {cameras}")
     print(f"Keypoints: {keypoints}")
     print(f"Bones: {skeleton}")
