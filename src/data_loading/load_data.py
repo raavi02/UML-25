@@ -12,11 +12,12 @@ def load_gt_data(cfg_d : DictConfig, ood: bool = False) -> Dict[str, pd.DataFram
     """Load ground truth data for all cameras."""
     gt_data = {}
     suffix = "_new" if ood else ""
-    data_dir = cfg_d.data.gt_data_dir
+    data_dir = getattr(cfg_d.data, "gt_data_dir_ood", cfg_d.data.gt_data_dir) if ood else cfg_d.data.gt_data_dir
     for cam in cfg_d.data.view_names:
         path = Path(data_dir) / f"CollectedData_{cam}{suffix}.csv"
         
         if path.exists():
+            logger.info(f"Loading GT file for {cam}{suffix}: {path}")
             # Skip first 3 rows (multi-index header) and read
             df = pd.read_csv(path, header=[0, 1, 2])
             # Flatten multi-index columns
@@ -29,6 +30,8 @@ def load_gt_data(cfg_d : DictConfig, ood: bool = False) -> Dict[str, pd.DataFram
             df = df[coord_cols]
             gt_data[f"{cam}"] = df
             logger.info(f"Loaded GT data for {cam}{suffix}: {df.shape}")
+        else:
+            logger.warning(f"GT file missing for {cam}{suffix}: {path}")
     
     return gt_data
 
@@ -37,11 +40,12 @@ def load_pred_data(cfg_d : DictConfig, ood: bool = False) -> Dict[str, pd.DataFr
     """Load prediction data for all cameras."""
     pred_data = {}
     suffix = "_new" if ood else ""
-    data_dir = cfg_d.data.preds_data_dir
+    data_dir = getattr(cfg_d.data, "preds_data_dir_ood", cfg_d.data.preds_data_dir) if ood else cfg_d.data.preds_data_dir
     for cam in cfg_d.data.view_names:
         path = Path(data_dir) / f"predictions_{cam}{suffix}.csv"
         
         if path.exists():
+            logger.info(f"Loading predictions file for {cam}{suffix}: {path}")
             # Skip first 3 rows (multi-index header) and read
             df = pd.read_csv(path, header=[0, 1, 2])
             
@@ -53,6 +57,8 @@ def load_pred_data(cfg_d : DictConfig, ood: bool = False) -> Dict[str, pd.DataFr
             df = df[coord_cols]
             pred_data[f"{cam}"] = df
             logger.info(f"Loaded prediction data for {cam}{suffix}: {df.shape}")
+        else:
+            logger.warning(f"Predictions file missing for {cam}{suffix}: {path}")
     
     return pred_data
 
@@ -85,7 +91,22 @@ def prepare_data(gt_data: Dict[str, pd.DataFrame],
                 X = np.concatenate([X_coords, confidences], axis=1)
             else:
                 X = X_coords
-            y = gt_df.values         
+            y = gt_df.values
+
+            # Drop rows with NaNs in either GT or predictions to avoid NaN losses.
+            valid_mask = ~np.isnan(y).any(axis=1) & ~np.isnan(X).any(axis=1)
+            if not valid_mask.all():
+                dropped = (~valid_mask).sum()
+                logger.warning(
+                    f"Dropping {dropped} / {len(valid_mask)} rows with NaNs for camera {cam}."
+                )
+            X = X[valid_mask]
+            y = y[valid_mask]
+
+            if len(X) == 0:
+                logger.warning(f"No valid samples left for camera {cam} after NaN filtering.")
+                continue
+
             X_list.append(X)
             y_list.append(y)
     X = np.vstack(X_list)
