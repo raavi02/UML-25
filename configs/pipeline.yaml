@@ -1,7 +1,7 @@
 # BEFORE ANYTHING ELSE: UPDATE YOUR ABSOLUTE PROJECT PATH
-root_dir: /home/rg3637/UML-25
+root_dir: "/Users/shreyaprabu/Desktop/UML Project/UML-25"
 
-dataset_name: fly
+dataset_name: chickadee
 # dataset_name: fly_toy
 
 dataset_config: ${root_dir}/configs/config_${dataset_name}.yaml
@@ -11,14 +11,15 @@ dataset_dir: ${root_dir}/data/${dataset_name}
 outputs_dir: ${root_dir}/outputs/${dataset_name}
 
 train:
-  model_type: MLP  # or MLP/GNN
-  mode: refine  # or loo/refine
-  seed: 42  # let's always use 42 for refine testing, 0 for loo testing
-  max_epochs: 1000
+  model_type: GNN  # or MLP/GNN
+  use_gat: False # Use GAT or not when model type is GNN
+  mode: loo  # or loo/refine
+  seed: 0  # let's always use 42 for refine testing, 0 for loo testing
+  max_epochs: 100
   val_ratio: 0.2
 
-  use_confidence: True
+  use_confidence: False
   run_grid_search: True
-  force_grid: False  # True: Will always do grid search even if there's a best_result.json
+  force_grid: True  # True: Will always do grid search even if there's a best_result.json
   run_eval_on_ood: True
   save_predictions: True
