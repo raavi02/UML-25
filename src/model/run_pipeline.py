@@ -244,6 +244,7 @@ def pipeline(config_file: str, for_seed: int | None = None) -> None:
                 keypoints=keypoints,
                 mode=mode,
                 use_confidence_options=[use_conf_flag],
+                use_gat=cfg_pipe.train.use_gat
             )
             with open(cache_file, "w") as f:
                 json.dump(best, f, indent=2)

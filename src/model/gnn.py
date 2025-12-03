@@ -9,14 +9,15 @@ import numpy as np
 import torch
 import pytorch_lightning as pl
 from torch import nn as nn
+import matplotlib.pyplot as plt
 from torch.nn import functional as F
-from torch_geometric.nn import GATConv
+from torch_geometric.nn import GATConv, GCNConv
 from torch.utils.data import TensorDataset, DataLoader
 
 from src.utils.logging import logger
 
 from src.evaluation.metrics import evaluate_model, calculate_improvement
-from src.data_loading.load_data import prepare_data
+from src.data_loading.load_data import prepare_data, load_pred_data
 
 def convert_labels_to_indices(keypoints: List[str], skeleton: List[Tuple[str, str]]) -> List[Tuple[int, int]]:
     keypoint_to_index = {kp: idx for idx, kp in enumerate(keypoints)}
@@ -65,6 +66,7 @@ def build_gnn_model(
             dropout=params["dropout"],
             learning_rate=params["learning_rate"],
             weight_decay=params["weight_decay"],
+            use_gat=params.get("use_gat", False)
         )
 
     elif mode == "loo":
@@ -221,6 +223,7 @@ def run_gnn_grid_search(
     keypoints: List[str],
     mode: str = "refine",
     use_confidence_options: List[bool] | None = None,
+    use_gat = False
 ) -> Dict[str, Any]:
     from src.model.grid_search import GridSearchRunner
 
@@ -229,17 +232,31 @@ def run_gnn_grid_search(
     skeleton_list = [tuple(edge) for edge in skeleton]
 
     use_conf_opts = use_confidence_options if use_confidence_options is not None else [True, False]
+    if use_gat:
+        param_grid = {
+            "hidden_dims": [[16, 8], [8, 4], [16, 8, 4]],
+            "hidden_heads": [[8, 4], [4, 2], [8, 4, 2]],
+            "dropout": [0.1, 0.2],
+            "negative_slope": [0.0, 0.2],
+            "learning_rate": [1e-3, 5e-4],
+            "weight_decay": [1e-4, 1e-5],
+            "use_confidence": use_conf_opts,
+            "batch_size": [64, 128],
+            "use_gat": [use_gat]
+        }
+    else:
+        param_grid = {
+            "hidden_dims": [[32, 32], [64, 32], [64, 32, 32]],
+            "hidden_heads": [[1]],
+            "dropout": [0.1, 0.2],
+            "negative_slope": [0.0, 0.2],
+            "learning_rate": [1e-3, 5e-4],
+            "weight_decay": [1e-4, 1e-5],
+            "use_confidence": use_conf_opts,
+            "batch_size": [64, 128],
+            "use_gat": [use_gat]
+        }
 
-    param_grid = {
-        "hidden_dims": [[16, 8], [8, 4], [16, 8, 4]],
-        "hidden_heads": [[8, 4], [4, 2], [8, 4, 2]],
-        "dropout": [0.1, 0.2],
-        "negative_slope": [0.0, 0.2],
-        "learning_rate": [1e-3, 5e-4],
-        "weight_decay": [1e-4, 1e-5],
-        "use_confidence": use_conf_opts,
-        "batch_size": [64, 128],
-    }
 
     def _build_model_for_params(params: Dict[str, Any], n_k: int) -> pl.LightningModule:
         use_conf = params.get("use_confidence", True)
@@ -329,36 +346,39 @@ def create_summary_report(final_results: dict, output_dir: str):
 
 def save_predictions(cfg_d, eval_dir, prediction_array, ood=True):
     """
-    Save model predictions into the original GT CSV format.
-    
-    Args:
-        cfg_d: config dictionary
-        prediction_array: numpy array of shape (total_samples, 2K)
-        ood: whether to use _new suffix
+    Save refined predictions and pixel error CSV.
+    ALSO compare per-frame pixel error against original predictions
+    and plot both on aligned CDF-style plots.
     """
 
     suffix = "_new" if ood else ""
-    data_dir = cfg_d.data.gt_data_dir   # ORIGINAL GT directory
-    output_dir = eval_dir  # Directory where you want to save new CSVs
+    data_dir = cfg_d.data.gt_data_dir
+    pred_original_dir = cfg_d.data.preds_data_dir  # ORIGINAL pre-refinement preds
+    output_dir = Path(eval_dir)
 
-    idx = 0  # pointer into prediction_array
+    idx = 0
+
+    # Prepare folders
+    pred_dir = output_dir / "refiner_predictions"
+    stats_dir = output_dir / "stats"
+    pred_dir.mkdir(parents=True, exist_ok=True)
+    stats_dir.mkdir(parents=True, exist_ok=True)
+
+    # Load original predictions ONCE using your function definition
+    pred_original_dict = load_pred_data(cfg_d, ood=ood)
 
     for cam in cfg_d.data.view_names:
 
+        # ---------------- LOAD GT ----------------
         path = Path(data_dir) / f"CollectedData_{cam}{suffix}.csv"
         if not path.exists():
-            print(f"GT file not found for {cam}, skipping.")
+            print(f"GT not found for {cam}, skipping")
             continue
 
-        # --- Load original file with multi-index ---
-        df_original = pd.read_csv(path, header=[0, 1, 2])
+        df_gt = pd.read_csv(path, header=[0, 1, 2])
+        flat_cols = ['_'.join(col).strip() for col in df_gt.columns.values]
+        df_gt.columns = flat_cols
 
-        # Flatten header same way as loader
-        flat_cols = ['_'.join(col).strip() for col in df_original.columns]
-        df_flat = df_original.copy()
-        df_flat.columns = flat_cols
-
-        # --- Identify coordinate columns in the SAME ORDER used by prepare_data ---
         coord_cols = [
             col for col in flat_cols
             if any(kp in col and coord in col
@@ -366,36 +386,99 @@ def save_predictions(cfg_d, eval_dir, prediction_array, ood=True):
                    for coord in ['x', 'y'])
         ]
 
-        num_rows = df_flat.shape[0]
+        num_rows = df_gt.shape[0]
         num_coords_per_frame = len(coord_cols)
 
-        # Slice predictions for this camera
-        preds_cam = prediction_array[idx:idx + num_rows, :num_coords_per_frame]
-        idx += preds_cam.shape[0]   # advance pointer based on what we actually sliced
+        # Slice refined predictions
+        preds_refined = prediction_array[idx:idx + num_rows, :num_coords_per_frame]
+        idx += num_rows
 
-        if preds_cam.shape[0] != num_rows:
-            print(
-                f"Prediction rows ({preds_cam.shape[0]}) != GT rows ({num_rows}) "
-                f"for {cam}{suffix}; skipping save for this camera."
-            )
+        # ---------------- SAVE REFINED PREDICTIONS CSV ----------------
+        df_pred_ref = df_gt.copy()
+        df_pred_ref.loc[:, coord_cols] = preds_refined
+
+        col_tuples = [tuple(c.split("_")) for c in flat_cols]
+        df_pred_ref.columns = pd.MultiIndex.from_tuples(col_tuples)
+
+        out_pred = pred_dir / f"predictions_{cam}{suffix}_refined.csv"
+        df_pred_ref.to_csv(out_pred, index=False)
+        print(f"Saved refined predictions → {out_pred}")
+
+        # =====================================================================
+        # --------------------- PIXEL ERRORS (REFINED) -----------------------
+        # =====================================================================
+        gt_xy = df_gt.loc[:, coord_cols].to_numpy()
+        refined_errs = []
+        for k in range(0, num_coords_per_frame, 2):
+            err = np.sqrt(((preds_refined[:, k:k+2] - gt_xy[:, k:k+2]) ** 2).sum(axis=1))
+            refined_errs.append(err)
+        refined_errs = np.vstack(refined_errs).T  # N × K
+
+        # =====================================================================
+        # ------------------ PIXEL ERRORS (ORIGINAL PREDICTIONS) --------------
+        # =====================================================================
+        if cam not in pred_original_dict:
+            print(f"No original predictions for {cam}, skipping stats plots.")
             continue
 
-        # Replace only coordinate numbers, keep everything else the same
-        df_flat.loc[:, coord_cols] = preds_cam
+        df_orig = pred_original_dict[cam]  # Already flattened & filtered
 
-        # --- Now reconstruct MultiIndex header for saving ---
+        # Extract only xy (remove likelihood columns)
+        orig_coord_cols = []
+        for kp in cfg_d.data.keypoint_names:
+            orig_coord_cols.extend([f"heatmap_multiview_transformer_tracker_{kp}_x", f"heatmap_multiview_transformer_tracker_{kp}_y"])
 
-        # Split flattened names back into tuples
-        column_tuples = [tuple(name.split("_")) for name in flat_cols]
-        df_save = df_flat.copy()
-        df_save.columns = pd.MultiIndex.from_tuples(column_tuples)
+        orig_xy = df_orig[orig_coord_cols].to_numpy()
 
-        # Save
-        os.makedirs(Path(output_dir) / "refiner_predictions", exist_ok=True)
-        output_path = Path(output_dir) /f"refiner_predictions"/f"CollectedData_{cam}{suffix}_refined.csv"
-        df_save.to_csv(output_path, index=False)
+        orig_errs = []
+        for k in range(0, num_coords_per_frame, 2):
+            err = np.sqrt(((orig_xy[:, k:k+2] - gt_xy[:, k:k+2]) ** 2).sum(axis=1))
+            orig_errs.append(err)
+        orig_errs = np.vstack(orig_errs).T  # N × K
 
-        print(f"Saved predictions for {cam} → {output_path}")
+        # =====================================================================
+        # ------------------------- SORT ORDER (ORIGINAL) ---------------------
+        # =====================================================================
+        # The difficulty ordering is based on ORIGINAL pixel error
+        # This is 1D per frame → we choose L2 norm across keypoints or max?
+        # The user wants CDF-like sorting per keypoint → so sort per keypoint individually.
+
+        keypoints = cfg_d.data.keypoint_names
+
+        cam_stats_dir = stats_dir / f"{cam}"
+        cam_stats_dir.mkdir(exist_ok=True)
+
+        # =====================================================================
+        # ------------------- PLOTS: ORIGINAL vs REFINED ----------------------
+        # =====================================================================
+        for i, kp in enumerate(keypoints):
+
+            orig_kp = orig_errs[:, i]
+            refined_kp = refined_errs[:, i]
+
+            # Sort frames by ORIGINAL difficulty
+            order = np.argsort(orig_kp)
+
+            orig_sorted = orig_kp[order]
+            refined_sorted = refined_kp[order]
+
+            # --------------------- PLOT ---------------------
+            plt.figure(figsize=(7, 5))
+            plt.plot(orig_sorted, label="Original Error", linewidth=2)
+            plt.plot(refined_sorted, label="Refined Error", linewidth=2)
+            plt.xlabel("Frames (sorted by original difficulty)")
+            plt.ylabel("Pixel Error")
+            plt.title(f"{cam} — {kp}\nOriginal vs Refined Pixel Error")
+            plt.grid(alpha=0.3)
+            plt.legend()
+
+            out_plot = cam_stats_dir / f"pixel_error_compare_{cam}_{kp}.png"
+            plt.savefig(out_plot, dpi=150, bbox_inches="tight")
+            plt.close()
+
+        print(f"Saved comparison stats → {cam_stats_dir}")
+
+
 
 
 
@@ -445,11 +528,12 @@ class ResidualGNN(pl.LightningModule):
                  negative_slope: float = 0.2,
                  dropout: float = 0.1,
                  learning_rate: float = 1e-3,
-                 weight_decay: float = 1e-4):
+                 weight_decay: float = 1e-4,
+                 use_gat: bool = False):
         super().__init__()
         self.save_hyperparameters()
         self.n_keypoints = int(n_keypoints)
-        self.skeleton = torch.tensor(skeleton, dtype=torch.long)  # shape (2, num_edges)
+        self.register_buffer("skeleton", torch.tensor(skeleton, dtype=torch.long))  # shape (2, num_edges)
 
         # Features per node (x, y, and optionally confidence)
         if input_dim % self.n_keypoints != 0:
@@ -459,25 +543,37 @@ class ResidualGNN(pl.LightningModule):
         self.node_feat_dim = input_dim // self.n_keypoints
 
         self.layers = nn.ModuleList()
+        self.use_gat = use_gat
         prev_dim = self.node_feat_dim
         prev_head = 1
+        if not self.use_gat:
+            hidden_heads = [1] * len(hidden_dims)   # force heads=1 for GCN
 
         # Build hidden layers
         for hidden_dim, hidden_head in zip(hidden_dims, hidden_heads):
-            self.layers.append(
-                GATConv(
+            if self.use_gat:
+                conv = GATConv(
                     in_channels=prev_dim * prev_head,
                     out_channels=hidden_dim,
                     heads=hidden_head,
                     negative_slope=negative_slope,
                     concat=True,
                 )
-            )
-            self.layers.append(nn.BatchNorm1d(hidden_dim * hidden_head))
+                out_dim_for_norm = hidden_dim * hidden_head
+                prev_head = hidden_head
+            else:
+                conv = GCNConv(
+                    in_channels=prev_dim * prev_head,
+                    out_channels=hidden_dim,
+                )
+                out_dim_for_norm = hidden_dim
+                prev_head = 1  # no heads in GCN path
+
+            self.layers.append(conv)
+            self.layers.append(nn.BatchNorm1d(out_dim_for_norm))
             self.layers.append(nn.ReLU())
             self.layers.append(nn.Dropout(dropout))
             prev_dim = hidden_dim
-            prev_head = hidden_head
 
         # Output layer - predicts coordinate adjustments
         self.output_layer = nn.Linear(prev_dim * prev_head, 2)
@@ -494,14 +590,12 @@ class ResidualGNN(pl.LightningModule):
         # and create edge_index for each sample in the batch
         batch_size = x.shape[0]
         x = x.reshape(batch_size * self.n_keypoints, self.node_feat_dim)
-
-        edge_index_list = []
-        for i in range(batch_size):
-            edge_index_list.append(self.skeleton + i * self.n_keypoints)
-        edge_index = torch.cat(edge_index_list, dim=1)  # shape (2, num_edges * batch_size)
-
+        edge_index = torch.cat(
+            [self.skeleton + i * self.n_keypoints for i in range(batch_size)],
+            dim=1
+        )  # shape (2, num_edges * batch_size)
         for layer in self.layers:
-            x = layer(x, edge_index=edge_index) if isinstance(layer, GATConv) else layer(x)
+            x = layer(x, edge_index=edge_index) if isinstance(layer, (GATConv, GCNConv)) else layer(x)
 
         # Reshape back to (batch_size, n_keypoints, feature_dim) for the linear layer
         x = x.reshape(batch_size, self.n_keypoints, -1)
