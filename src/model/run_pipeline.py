@@ -26,6 +26,7 @@ from src.model.mlp import (
 from src.model.gnn import (
     run_gnn_grid_search,
     evaluate_gnn_checkpoint,
+    evaluate_gnn_loo_checkpoint,
     create_summary_report as create_gnn_summary_report,
 )
 from src.utils.io import load_cfgs
@@ -283,6 +284,16 @@ def pipeline(config_file: str, for_seed: int | None = None) -> None:
                 save_preds=cfg_pipe.train.save_predictions
             )
             test_shape = X_test.shape
+        elif run_eval_on_ood and mode == "loo":
+            metrics = evaluate_gnn_loo_checkpoint(
+                best_path=best["best_path"],
+                gt_data=splits["gt_test"],
+                pred_data=splits["pred_test"],
+                output_dir=outputs_dir,
+                use_confidence=use_conf,
+                n_drops_per_pose=getattr(cfg_pipe.train, "n_drops_per_pose", 1),
+            )
+            test_shape = metrics.get("eval_X_shape", (0, feature_dim))
         else:
             metrics = {}
 
