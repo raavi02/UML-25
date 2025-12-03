@@ -211,3 +211,117 @@ def prepare_loo_data_from_preds(
     logger.info(f"Shape of LOO target y: {y_loo.shape}")
 
     return X_loo, y_loo
+
+
+def prepare_loo_eval_data(
+    gt_data: Dict[str, pd.DataFrame],
+    pred_data: Dict[str, pd.DataFrame],
+    use_confidence: bool = True,
+    n_drops_per_pose: int = 1,
+    random_state: int | None = None,
+):
+    """
+    Build leave-one-out evaluation examples that align predictions with ground truth.
+
+    Returns:
+        X_loo_eval: (n_examples, 2K [+K_conf] + K)
+        y_gt:       (n_examples, 2K) ground-truth coordinates
+        base_preds: (n_examples, 2K) original predictor outputs
+        dropped:    (n_examples,) index of the dropped keypoint for each example
+    """
+
+    rng = np.random.RandomState(random_state) if random_state is not None else np.random
+
+    X_list, y_gt_list, base_pred_list, dropped_list = [], [], [], []
+
+    for cam, gt_df in gt_data.items():
+        if cam not in pred_data:
+            logger.warning(f"Skipping camera {cam} for LOO eval; no predictions available.")
+            continue
+
+        pred_df = pred_data[cam]
+        if pred_df is None or pred_df.empty or gt_df is None or gt_df.empty:
+            logger.warning(f"Skipping camera {cam} for LOO eval; empty GT or predictions.")
+            continue
+
+        if len(gt_df) != len(pred_df):
+            raise ValueError(
+                f"GT/pred length mismatch for camera {cam}: "
+                f"GT={len(gt_df)}, Pred={len(pred_df)}"
+            )
+
+        num_cols = pred_df.shape[1]
+        if num_cols % 3 != 0:
+            raise ValueError(
+                f"Prediction DataFrame for camera {cam} has {num_cols} columns, "
+                "expected groups of (x, y, likelihood)."
+            )
+
+        K = num_cols // 3
+        if n_drops_per_pose > K:
+            raise ValueError(
+                f"n_drops_per_pose ({n_drops_per_pose}) cannot exceed number of keypoints ({K})."
+            )
+
+        coord_cols = []
+        for i in range(0, num_cols, 3):
+            coord_cols.extend([i, i + 1])
+
+        coords_pred = pred_df.iloc[:, coord_cols].values.astype(np.float32)
+        coords_gt = gt_df.values.astype(np.float32)
+
+        if use_confidence:
+            conf_cols = [i + 2 for i in range(0, num_cols, 3)]
+            confs = pred_df.iloc[:, conf_cols].values.astype(np.float32)
+            pose_features_all = np.concatenate([coords_pred, confs], axis=1)
+        else:
+            pose_features_all = coords_pred
+
+        # Drop any rows containing NaNs in either GT or predictions
+        valid_mask = (
+            ~np.isnan(coords_pred).any(axis=1)
+            & ~np.isnan(coords_gt).any(axis=1)
+            & ~np.isnan(pose_features_all).any(axis=1)
+        )
+
+        if not valid_mask.all():
+            dropped = (~valid_mask).sum()
+            logger.warning(
+                f"Dropping {dropped} / {len(valid_mask)} rows with NaNs for camera {cam} during LOO eval."
+            )
+
+        coords_pred = coords_pred[valid_mask]
+        coords_gt = coords_gt[valid_mask]
+        pose_features_all = pose_features_all[valid_mask]
+
+        for t in range(coords_pred.shape[0]):
+            pose_feat_t = pose_features_all[t]
+            coords_pred_t = coords_pred[t]
+            coords_gt_t = coords_gt[t]
+
+            drop_indices = rng.choice(K, size=n_drops_per_pose, replace=False)
+
+            for j in drop_indices:
+                mask = np.zeros(K, dtype=np.float32)
+                mask[j] = 1.0
+
+                X_example = np.concatenate([pose_feat_t, mask], axis=0)
+
+                X_list.append(X_example)
+                y_gt_list.append(coords_gt_t)
+                base_pred_list.append(coords_pred_t)
+                dropped_list.append(int(j))
+
+    if not X_list:
+        raise ValueError("No data available to build LOO evaluation set.")
+
+    X_loo_eval = np.stack(X_list, axis=0)
+    y_gt = np.stack(y_gt_list, axis=0)
+    base_preds = np.stack(base_pred_list, axis=0)
+    dropped = np.array(dropped_list, dtype=np.int64)
+
+    logger.info(
+        f"LOO eval set shapes — X: {X_loo_eval.shape}, y_gt: {y_gt.shape}, base_preds: {base_preds.shape}"
+    )
+
+    return X_loo_eval, y_gt, base_preds, dropped
