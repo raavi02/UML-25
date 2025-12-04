@@ -1,10 +1,12 @@
 # BEFORE ANYTHING ELSE: UPDATE YOUR ABSOLUTE PROJECT PATH
-root_dir: /home/rg3637/UML-25
+root_dir: "/Users/shreyaprabu/Desktop/UML Project/UML-25"
 
 data:
   dataset_name: chickadee
-  gt_data_dir: ${root_dir}/data/${data.dataset_name}/ground_truth
-  preds_data_dir: ${root_dir}/data/${data.dataset_name}/predictions
+  gt_data_dir: ${root_dir}/data/${data.dataset_name}/chickadee_ground_truth
+  gt_data_dir_ood: ${root_dir}/data/${data.dataset_name}/chickadee_ground_truth
+  preds_data_dir: ${root_dir}/data/${data.dataset_name}/chickadee_predictions
+  preds_data_dir_ood: ${root_dir}/data/${data.dataset_name}/chickadee_predictions
 
   # video_dir: ${root_dir}/data/chickadee/videos
 

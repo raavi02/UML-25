@@ -19,12 +19,14 @@ from src.data_loading.load_data import (
 from src.model.mlp import (
     run_mlp_grid_search,
     evaluate_mlp_checkpoint,
+    evaluate_mlp_loo_checkpoint,
     save_predictions,
     create_summary_report as create_mlp_summary_report,
 )
 from src.model.gnn import (
     run_gnn_grid_search,
     evaluate_gnn_checkpoint,
+    evaluate_gnn_loo_checkpoint,
     create_summary_report as create_gnn_summary_report,
 )
 from src.utils.io import load_cfgs
@@ -137,6 +139,7 @@ def pipeline(config_file: str, for_seed: int | None = None) -> None:
         "va_idx": va_idx,
         "test_indices": None,
     }
+    test_shape = (0, feature_dim)
 
     # -------------------------------------------
     # Train & Evaluate
@@ -183,6 +186,9 @@ def pipeline(config_file: str, for_seed: int | None = None) -> None:
         # Evaluation
         # ----------------------------------------------------
         use_conf = best["params"]["use_confidence"]
+        X_test = np.empty((0, feature_dim))
+        y_test = np.empty((0, cfg_d.data.num_keypoints * 2))
+        test_shape = X_test.shape
 
         if run_eval_on_ood and mode == "refine":
             # In refine mode, we can evaluate L2 vs GT on OOD test set
@@ -200,12 +206,21 @@ def pipeline(config_file: str, for_seed: int | None = None) -> None:
                 cfg_d=cfg_d,
                 save_preds=cfg_pipe.train.save_predictions
             )
-              
+            test_shape = X_test.shape
+
+        elif run_eval_on_ood and mode == "loo":
+            metrics = evaluate_mlp_loo_checkpoint(
+                best_path=best["best_path"],
+                gt_data=splits["gt_test"],
+                pred_data=splits["pred_test"],
+                output_dir=outputs_dir,
+                use_confidence=use_conf,
+                n_drops_per_pose=getattr(cfg_pipe.train, "n_drops_per_pose", 1),
+            )
+            test_shape = metrics.get("eval_X_shape", (0, feature_dim))
+
         else:
-            # In LOO mode we don't yet have a standard L2-to-GT evaluation;
-            # or if run_eval_on_ood is False, we skip test eval.
-            X_test = np.empty((0, feature_dim))
-            y_test = np.empty((0, cfg_d.data.num_keypoints * 2))
+            # If run_eval_on_ood is False, we skip test eval entirely.
             metrics = {}
 
     elif model_type == "GNN":
@@ -252,7 +267,8 @@ def pipeline(config_file: str, for_seed: int | None = None) -> None:
 
         # ---------- evaluation ----------
         use_conf = best["params"]["use_confidence"]
-
+        X_test = np.empty((0, feature_dim))
+        y_test = np.empty((0, cfg_d.data.num_keypoints * 2))
         if run_eval_on_ood and mode == "refine":
             X_test, y_test = prepare_data(
                 gt_data=splits["gt_test"],
@@ -268,9 +284,18 @@ def pipeline(config_file: str, for_seed: int | None = None) -> None:
                 cfg_d=cfg_d,
                 save_preds=cfg_pipe.train.save_predictions
             )
+            test_shape = X_test.shape
+        elif run_eval_on_ood and mode == "loo":
+            metrics = evaluate_gnn_loo_checkpoint(
+                best_path=best["best_path"],
+                gt_data=splits["gt_test"],
+                pred_data=splits["pred_test"],
+                output_dir=outputs_dir,
+                use_confidence=use_conf,
+                n_drops_per_pose=getattr(cfg_pipe.train, "n_drops_per_pose", 1),
+            )
+            test_shape = metrics.get("eval_X_shape", (0, feature_dim))
         else:
-            X_test = np.empty((0, feature_dim))
-            y_test = np.empty((0, cfg_d.data.num_keypoints * 2))
             metrics = {}
 
     # -------------------------------------------
@@ -283,7 +308,7 @@ def pipeline(config_file: str, for_seed: int | None = None) -> None:
         "data_shapes": {
             "train": (len(splits["tr_idx"]), feature_dim),
             "val": (len(splits["va_idx"]), feature_dim),
-            "test": X_test.shape,
+            "test": test_shape,
         },
         "mode": mode,
         "timestamp": pd.Timestamp.now().isoformat(),

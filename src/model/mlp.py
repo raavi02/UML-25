@@ -18,7 +18,7 @@ from torch.utils.data import TensorDataset, DataLoader
 from src.utils.logging import logger
 from src.model.grid_search import GridSearchRunner
 from src.evaluation.metrics import evaluate_model, calculate_improvement
-from src.data_loading.load_data import prepare_data, load_pred_data
+from src.data_loading.load_data import prepare_data, prepare_loo_eval_data, load_pred_data
 
 # ---- factories used by GridSearchRunner ----
 
@@ -188,6 +188,166 @@ def evaluate_mlp_checkpoint(best_path: str, X_test: np.ndarray, y_test: np.ndarr
 
     return metrics
 
+
+def evaluate_mlp_loo_checkpoint(
+    best_path: str,
+    gt_data: Dict[str, Any],
+    pred_data: Dict[str, Any],
+    output_dir: str | Path = "mlp_results",
+    use_confidence: bool = True,
+    n_drops_per_pose: int = 1,
+) -> Dict[str, Any]:
+    """
+    Evaluate a trained LOO MLP by comparing reconstruction to ground truth on dropped joints.
+    """
+
+    output_dir = Path(output_dir)
+    eval_dir = output_dir / "mlp" / "evaluations"
+    eval_dir.mkdir(parents=True, exist_ok=True)
+
+    logger.info("Preparing LOO evaluation data (GT + predictions)...")
+    X_eval, y_gt, base_preds, _ = prepare_loo_eval_data(
+        gt_data=gt_data,
+        pred_data=pred_data,
+        use_confidence=use_confidence,
+        n_drops_per_pose=n_drops_per_pose,
+    )
+
+    logger.info(f"Loading LOO model from: {best_path}")
+    model = PoseMLPLOO.load_from_checkpoint(best_path)
+    model.eval()
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model.to(device)
+    logger.info(f"Using device: {device}")
+
+    # Forward pass
+    with torch.no_grad():
+        y_recon = model(torch.as_tensor(X_eval, dtype=torch.float32, device=device)).cpu().numpy()
+
+    K = model.n_keypoints
+    mask = X_eval[:, -K:]  # (N, K)
+
+    base_coords = base_preds.reshape(-1, K, 2)
+    recon_coords = y_recon.reshape(-1, K, 2)
+    gt_coords = y_gt.reshape(-1, K, 2)
+
+    base_errors = np.sqrt(((base_coords - gt_coords) ** 2).sum(axis=2))
+    recon_errors = np.sqrt(((recon_coords - gt_coords) ** 2).sum(axis=2))
+    recon_deltas = np.sqrt(((recon_coords - base_coords) ** 2).sum(axis=2))
+
+    mask_bool = mask > 0.5
+    if not mask_bool.any():
+        logger.error("No dropped keypoints found in eval mask; cannot compute metrics.")
+        return {}
+
+    dropped_base_errors = base_errors[mask_bool]
+    dropped_recon_errors = recon_errors[mask_bool]
+    dropped_deltas = recon_deltas[mask_bool]
+
+    normalized_deltas = dropped_deltas / (dropped_base_errors + 1e-8)
+    normalized_recon_error = dropped_recon_errors / (dropped_base_errors + 1e-8)
+
+    corr_delta_vs_base = np.nan
+    corr_recon_vs_base = np.nan
+    if dropped_base_errors.size > 1:
+        corr_delta_vs_base = float(np.corrcoef(dropped_deltas, dropped_base_errors)[0, 1])
+        corr_recon_vs_base = float(np.corrcoef(dropped_recon_errors, dropped_base_errors)[0, 1])
+
+    # Bin analysis: group by base-error magnitude and summarize reconstruction behavior
+    bin_stats = []
+    try:
+        quantiles = np.linspace(0, 1, 6)  # 5 bins
+        edges = np.quantile(dropped_base_errors, quantiles)
+        edges = np.unique(edges)
+        if len(edges) >= 2:
+            for i in range(len(edges) - 1):
+                lo, hi = edges[i], edges[i + 1]
+                if i == len(edges) - 2:
+                    mask_bin = (dropped_base_errors >= lo) & (dropped_base_errors <= hi)
+                else:
+                    mask_bin = (dropped_base_errors >= lo) & (dropped_base_errors < hi)
+
+                if not mask_bin.any():
+                    continue
+
+                bin_stats.append({
+                    "bin_low": float(lo),
+                    "bin_high": float(hi),
+                    "count": int(mask_bin.sum()),
+                    "mean_base_error": float(dropped_base_errors[mask_bin].mean()),
+                    "mean_recon_error": float(dropped_recon_errors[mask_bin].mean()),
+                    "mean_delta": float(dropped_deltas[mask_bin].mean()),
+                    "mean_recon_base_ratio": float(normalized_recon_error[mask_bin].mean()),
+                })
+    except Exception as e:  # pragma: no cover - defensive
+        logger.warning(f"Failed to compute LOO bin stats: {e}")
+
+    per_k_base = []
+    per_k_recon = []
+    per_k_delta = []
+    for k in range(K):
+        mask_k = mask_bool[:, k]
+        if mask_k.any():
+            per_k_base.append(float(base_errors[mask_k, k].mean()))
+            per_k_recon.append(float(recon_errors[mask_k, k].mean()))
+            per_k_delta.append(float(recon_deltas[mask_k, k].mean()))
+        else:
+            per_k_base.append(np.nan)
+            per_k_recon.append(np.nan)
+            per_k_delta.append(np.nan)
+
+    metrics: Dict[str, Any] = {
+        "base_mpjpe": float(dropped_base_errors.mean()),
+        "reconstruction_mpjpe": float(dropped_recon_errors.mean()),
+        "delta_magnitude": float(dropped_deltas.mean()),
+        "normalized_delta_mean": float(normalized_deltas.mean()),
+        "normalized_delta_median": float(np.median(normalized_deltas)),
+        "normalized_recon_error_mean": float(normalized_recon_error.mean()),
+        "corr_delta_vs_base_error": corr_delta_vs_base,
+        "corr_recon_vs_base_error": corr_recon_vs_base,
+        "binned_error_stats": bin_stats,
+        "per_keypoint_base_error": per_k_base,
+        "per_keypoint_reconstruction_error": per_k_recon,
+        "per_keypoint_delta": per_k_delta,
+        "num_eval_examples": int(X_eval.shape[0]),
+        "eval_X_shape": tuple(X_eval.shape),
+    }
+
+    print("\n" + "=" * 60)
+    print("MLP LOO - EVALUATION RESULTS")
+    print("=" * 60)
+    print(f"Model: {Path(best_path).name}")
+    print(f"Eval examples (pose x drops): {X_eval.shape[0]}")
+    print("\nDROPPED JOINT METRICS:")
+    print(f"  Base pred MPJPE: {metrics['base_mpjpe']:.4f} pixels")
+    print(f"  LOO recon MPJPE: {metrics['reconstruction_mpjpe']:.4f} pixels")
+    print(f"  Delta magnitude (|recon - pred|): {metrics['delta_magnitude']:.4f} pixels")
+    print(f"  Normalized delta (mean): {metrics['normalized_delta_mean']:.4f}")
+    print(f"  Recon/Base error ratio (mean): {metrics['normalized_recon_error_mean']:.4f}")
+    if not np.isnan(metrics["corr_delta_vs_base_error"]):
+        print(f"  Corr(delta, base_error): {metrics['corr_delta_vs_base_error']:.4f}")
+    if not np.isnan(metrics["corr_recon_vs_base_error"]):
+        print(f"  Corr(recon_error, base_error): {metrics['corr_recon_vs_base_error']:.4f}")
+    if metrics.get("binned_error_stats"):
+        print("\n  Mean recon error by base-error bins:")
+        for b in metrics["binned_error_stats"]:
+            print(
+                f"    [{b['bin_low']:.2f}, {b['bin_high']:.2f}] (n={b['count']}): "
+                f"base={b['mean_base_error']:.3f}, recon={b['mean_recon_error']:.3f}, "
+                f"ratio={b['mean_recon_base_ratio']:.3f}"
+            )
+    print("=" * 60)
+
+    results_file = eval_dir / f"loo_eval_{Path(best_path).stem}.json"
+    serializable_metrics = {k: (v.tolist() if hasattr(v, "tolist") else v)
+                            for k, v in metrics.items()}
+    with open(results_file, "w") as f:
+        json.dump(serializable_metrics, f, indent=2)
+    logger.info(f"LOO evaluation saved to: {results_file}")
+
+    return metrics
+
 # ---- convenience function we can call from pipeline ----
 
 def run_mlp_grid_search(
@@ -302,9 +462,12 @@ def create_summary_report(final_results: dict, output_dir: str):
             pck_5 = metrics.get('pck_5', None)
             pck_10 = metrics.get('pck_10', None)
 
-            f.write(f"  MPJPE: {_fmt_float(mpjpe, '.4f')} pixels\n")
-            f.write(f"  PCK@5: {_fmt_float(pck_5, '.2f')}%\n")
-            f.write(f"  PCK@10: {_fmt_float(pck_10, '.2f')}%\n")
+            if mpjpe is not None:
+                f.write(f"  MPJPE: {_fmt_float(mpjpe, '.4f')} pixels\n")
+            if pck_5 is not None:
+                f.write(f"  PCK@5: {_fmt_float(pck_5, '.2f')}%\n")
+            if pck_10 is not None:
+                f.write(f"  PCK@10: {_fmt_float(pck_10, '.2f')}%\n")
 
             # Improvement block (only if these exist and look numeric)
             orig = metrics.get('original_mpjpe', None)
@@ -318,6 +481,40 @@ def create_summary_report(final_results: dict, output_dir: str):
                 f.write(f"  Refined MPJPE:  {_fmt_float(ref, '.4f')} pixels\n")
                 f.write(f"  Absolute Improvement: {_fmt_float(abs_imp, '.4f')} pixels\n")
                 f.write(f"  Relative Improvement: {_fmt_float(rel_imp, '.2f')}%\n")
+
+            # LOO reconstruction block
+            base_mpjpe = metrics.get('base_mpjpe', None)
+            recon_mpjpe = metrics.get('reconstruction_mpjpe', None)
+            if base_mpjpe is not None:
+                f.write("\nLOO RECONSTRUCTION (dropped joints):\n")
+                f.write(f"  Base pred MPJPE: {_fmt_float(base_mpjpe, '.4f')} pixels\n")
+                if recon_mpjpe is not None:
+                    f.write(f"  LOO recon MPJPE: {_fmt_float(recon_mpjpe, '.4f')} pixels\n")
+                if metrics.get('normalized_delta_mean', None) is not None:
+                    f.write(
+                        f"  Normalized delta (mean): {_fmt_float(metrics['normalized_delta_mean'], '.4f')}\n"
+                    )
+                if metrics.get('normalized_recon_error_mean', None) is not None:
+                    f.write(
+                        f"  Recon/Base error ratio (mean): {_fmt_float(metrics['normalized_recon_error_mean'], '.4f')}\n"
+                    )
+                if metrics.get('corr_delta_vs_base_error', None) is not None:
+                    f.write(
+                        f"  Corr(delta, base_error): {_fmt_float(metrics['corr_delta_vs_base_error'], '.4f')}\n"
+                    )
+                if metrics.get('corr_recon_vs_base_error', None) is not None:
+                    f.write(
+                        f"  Corr(recon_error, base_error): {_fmt_float(metrics['corr_recon_vs_base_error'], '.4f')}\n"
+                    )
+                if metrics.get('binned_error_stats'):
+                    f.write("  Mean recon error by base-error bins:\n")
+                    for b in metrics['binned_error_stats']:
+                        f.write(
+                            f"    [{_fmt_float(b['bin_low'], '.2f')}, {_fmt_float(b['bin_high'], '.2f')}] "
+                            f"(n={b['count']}): base={_fmt_float(b['mean_base_error'], '.3f')}, "
+                            f"recon={_fmt_float(b['mean_recon_error'], '.3f')}, "
+                            f"ratio={_fmt_float(b['mean_recon_base_ratio'], '.3f')}\n"
+                        )
         else:
             # This covers LOO mode and/or when OOD eval is disabled
             f.write("\nTEST SET PERFORMANCE:\n")
@@ -379,9 +576,19 @@ def save_predictions(cfg_d, eval_dir, prediction_array, ood=True):
         num_rows = df_gt.shape[0]
         num_coords_per_frame = len(coord_cols)
 
-        # Slice refined predictions
+        # Slice refined predictions; guard against length mismatches
         preds_refined = prediction_array[idx:idx + num_rows, :num_coords_per_frame]
-        idx += num_rows
+        rows = preds_refined.shape[0]
+        idx += rows
+
+        if rows != num_rows:
+            print(
+                f"Prediction rows ({rows}) != GT rows ({num_rows}) "
+                f"for {cam}{suffix}; skipping save for this camera."
+            )
+            continue
+
+        preds_refined = preds_refined.astype(np.float64, copy=False)
 
         # ---------------- SAVE REFINED PREDICTIONS CSV ----------------
         df_pred_ref = df_gt.copy()
