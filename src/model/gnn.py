@@ -18,6 +18,7 @@ from src.utils.logging import logger
 
 from src.evaluation.metrics import evaluate_model, calculate_improvement
 from src.data_loading.load_data import prepare_data, prepare_loo_eval_data, load_pred_data
+from src.model.loo_plotting import save_loo_recon_plots
 
 def convert_labels_to_indices(keypoints: List[str], skeleton: List[Tuple[str, str]]) -> List[Tuple[int, int]]:
     keypoint_to_index = {kp: idx for idx, kp in enumerate(keypoints)}
@@ -220,6 +221,8 @@ def evaluate_gnn_loo_checkpoint(
     output_dir: str | Path = "gnn_results",
     use_confidence: bool = True,
     n_drops_per_pose: int = 1,
+    keypoint_names: List[str] | None = None,
+    save_plots: bool = True,
 ) -> Dict[str, Any]:
     """Evaluate a trained GNN LOO model by comparing reconstruction to GT on dropped joints."""
 
@@ -349,6 +352,16 @@ def evaluate_gnn_loo_checkpoint(
     with open(results_file, "w") as f:
         json.dump(serializable_metrics, f, indent=2)
     logger.info(f"LOO evaluation saved to: {results_file}")
+
+    if save_plots:
+        save_loo_recon_plots(
+            eval_dir=eval_dir,
+            keypoint_names=keypoint_names or [f"kp_{i}" for i in range(K)],
+            base_errors=base_errors,
+            recon_errors=recon_errors,
+            drop_mask=mask_bool,
+            tag="gnn",
+        )
 
     return metrics
 
