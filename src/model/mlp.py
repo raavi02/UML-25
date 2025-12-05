@@ -846,9 +846,17 @@ class PoseMLPLOO(pl.LightningModule):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # No residual connection here; we just output a reconstructed pose
+        B = x.shape[0]
+        K = self.n_keypoints
+        coords = x[:, :2*K]       # [B, 2K]
+        mask = x[:, 2*K:]  
+        mask_xy = mask.repeat_interleave(2, dim=1)
+        coords_masked = coords * (1 - mask_xy)
+        x_processed = torch.cat([coords_masked, mask], dim=1)
+        out = x_processed
         for layer in self.layers:
-            x = layer(x)
-        return self.output_layer(x)  # [B, 2K]
+            out = layer(out)
+        return self.output_layer(out)  # [B, 2K]
 
     def _compute_loss(self, x: torch.Tensor, y_true: torch.Tensor) -> torch.Tensor:
         """

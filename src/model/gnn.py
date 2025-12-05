@@ -946,13 +946,12 @@ class PoseGNNLOO(pl.LightningModule):
             conf = x[:, conf_start:conf_end].view(B, K, 1)  # (B, K, 1)
             mask = x[:, conf_end : conf_end + K].view(B, K)  # (B, K)
             mask_unsq = mask.unsqueeze(-1)  # (B, K, 1)
-            node_feats = torch.cat([coords, conf, mask_unsq], dim=-1)  # (B, K, 4)
+            node_feats = torch.cat([coords*(1 - mask_unsq), conf, mask_unsq], dim=-1)  # (B, K, 4)
         else:
             # no conf: coords + mask
             mask = x[:, base : base + K].view(B, K)  # (B, K)
             mask_unsq = mask.unsqueeze(-1)  # (B, K, 1)
-            node_feats = torch.cat([coords, mask_unsq], dim=-1)  # (B, K, 3)
-
+            node_feats = torch.cat([coords*(1 - mask_unsq), mask_unsq], dim=-1)  # (B, K, 3)        
         return node_feats, mask, coords_flat
 
     # ---- forward & loss ----
