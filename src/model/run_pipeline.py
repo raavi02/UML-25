@@ -216,6 +216,8 @@ def pipeline(config_file: str, for_seed: int | None = None) -> None:
                 output_dir=outputs_dir,
                 use_confidence=use_conf,
                 n_drops_per_pose=getattr(cfg_pipe.train, "n_drops_per_pose", 1),
+                keypoint_names=keypoints,
+                save_plots=cfg_pipe.train.save_predictions,
             )
             test_shape = metrics.get("eval_X_shape", (0, feature_dim))
 
@@ -293,6 +295,8 @@ def pipeline(config_file: str, for_seed: int | None = None) -> None:
                 output_dir=outputs_dir,
                 use_confidence=use_conf,
                 n_drops_per_pose=getattr(cfg_pipe.train, "n_drops_per_pose", 1),
+                keypoint_names=keypoints,
+                save_plots=cfg_pipe.train.save_predictions,
             )
             test_shape = metrics.get("eval_X_shape", (0, feature_dim))
         else:

@@ -19,6 +19,7 @@ from src.utils.logging import logger
 from src.model.grid_search import GridSearchRunner
 from src.evaluation.metrics import evaluate_model, calculate_improvement
 from src.data_loading.load_data import prepare_data, prepare_loo_eval_data, load_pred_data
+from src.model.loo_plotting import save_loo_recon_plots
 
 # ---- factories used by GridSearchRunner ----
 
@@ -196,6 +197,8 @@ def evaluate_mlp_loo_checkpoint(
     output_dir: str | Path = "mlp_results",
     use_confidence: bool = True,
     n_drops_per_pose: int = 1,
+    keypoint_names: List[str] | None = None,
+    save_plots: bool = True,
 ) -> Dict[str, Any]:
     """
     Evaluate a trained LOO MLP by comparing reconstruction to ground truth on dropped joints.
@@ -345,6 +348,16 @@ def evaluate_mlp_loo_checkpoint(
     with open(results_file, "w") as f:
         json.dump(serializable_metrics, f, indent=2)
     logger.info(f"LOO evaluation saved to: {results_file}")
+
+    if save_plots:
+        save_loo_recon_plots(
+            eval_dir=eval_dir,
+            keypoint_names=keypoint_names or [f"kp_{i}" for i in range(K)],
+            base_errors=base_errors,
+            recon_errors=recon_errors,
+            drop_mask=mask_bool,
+            tag="mlp",
+        )
 
     return metrics
 
